@@ -66,3 +66,16 @@ class User(AbstractUser):
 
     def __str__(self):
         return self.email
+
+class Tutelle(models.Model):
+    tutor = models.ForeignKey(User, on_delete=models.CASCADE, related_name='tutelles')
+    first_name = models.CharField(max_length=100)
+    last_name = models.CharField(max_length=100)
+    relation = models.CharField(max_length=50) # Ex: fils, épouse
+    linked_user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='tutelle_profile')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.first_name} {self.last_name} ({self.relation})"
+

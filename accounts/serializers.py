@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Daara
+from .models import Daara, Tutelle
 
 User = get_user_model()
 
@@ -8,6 +8,12 @@ class DaaraSerializer(serializers.ModelSerializer):
     class Meta:
         model = Daara
         fields = '__all__'
+
+class TutelleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Tutelle
+        fields = '__all__'
+        read_only_fields = ('tutor', 'linked_user')
 
 class UserSerializer(serializers.ModelSerializer):
     daara = DaaraSerializer(read_only=True)

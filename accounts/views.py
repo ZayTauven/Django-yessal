@@ -1,9 +1,10 @@
-from rest_framework import generics, permissions, status
+from rest_framework import generics, permissions, status, viewsets
 from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from django.contrib.auth import get_user_model
-from .serializers import RegisterSerializer, UserSerializer
+from .models import Daara, Tutelle
+from .serializers import RegisterSerializer, UserSerializer, DaaraSerializer, TutelleSerializer
 
 User = get_user_model()
 
@@ -32,3 +33,18 @@ class ProfileView(generics.RetrieveUpdateAPIView):
 
     def get_object(self):
         return self.request.user
+
+class DaaraViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = (permissions.IsAuthenticated,)
+    serializer_class = DaaraSerializer
+    queryset = Daara.objects.filter(is_active=True)
+
+class TutelleViewSet(viewsets.ModelViewSet):
+    permission_classes = (permissions.IsAuthenticated,)
+    serializer_class = TutelleSerializer
+
+    def get_queryset(self):
+        return Tutelle.objects.filter(tutor=self.request.user)
+
+    def perform_create(self, serializer):
+        serializer.save(tutor=self.request.user)

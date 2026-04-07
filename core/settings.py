@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     
     # Local apps
     'accounts',
+    'events',
 ]
 
 AUTH_USER_MODEL = 'accounts.User'
