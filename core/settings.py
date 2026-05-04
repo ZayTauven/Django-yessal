@@ -10,6 +10,8 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
+import warnings
+import sys
 from pathlib import Path
 from decouple import config
 
@@ -24,9 +26,20 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-y-l@h^10c9@1&uz)at+yf5p*)z%#gkk2#e=-e9d0zg0ue=rnrb')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = config('DEBUG', default=True, cast=bool)
+def _coerce_debug(value):
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {'1', 'true', 'yes', 'on', 'dev', 'development'}:
+        return True
+    if normalized in {'0', 'false', 'no', 'off', 'prod', 'production', 'release'}:
+        return False
+    return False
 
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1').split(',')
+
+DEBUG = _coerce_debug(config('DEBUG', default='false'))
+
+ALLOWED_HOSTS = ['*'] if DEBUG else config('ALLOWED_HOSTS', default='localhost,127.0.0.1').split(',')
 
 
 # Application definition
@@ -47,7 +60,26 @@ INSTALLED_APPS = [
     # Local apps
     'accounts',
     'events',
+    'contributions',
+    'comms',
+    'news',
 ]
+
+USE_S3 = config('USE_S3', default=False, cast=bool)
+HAS_DJANGO_STORAGES = False
+if USE_S3:
+    try:
+        import storages  # noqa: F401
+        HAS_DJANGO_STORAGES = True
+    except ImportError:
+        warnings.warn(
+            "USE_S3=true mais 'django-storages' n'est pas installé. Fallback vers stockage local.",
+            RuntimeWarning,
+        )
+        USE_S3 = False
+
+if HAS_DJANGO_STORAGES:
+    INSTALLED_APPS.append('storages')
 
 AUTH_USER_MODEL = 'accounts.User'
 
@@ -61,6 +93,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'core.middleware.AuditMiddleware',
 ]
 
 ROOT_URLCONF = 'core.urls'
@@ -86,16 +119,24 @@ WSGI_APPLICATION = 'core.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': config('DB_NAME', default='yessal_database'),
-        'USER': config('DB_USER', default='postgres'),
-        'PASSWORD': config('DB_PASSWORD', default='admin'),
-        'HOST': config('DB_HOST', default='localhost'),
-        'PORT': config('DB_PORT', default='5432'),
+if 'test' in sys.argv:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'test_db.sqlite3',
+        }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': config('DB_NAME', default='yessal_database'),
+            'USER': config('DB_USER', default='postgres'),
+            'PASSWORD': config('DB_PASSWORD', default='admin'),
+            'HOST': config('DB_HOST', default='localhost'),
+            'PORT': config('DB_PORT', default='5432'),
+        }
+    }
 
 
 # Password validation
@@ -150,4 +191,52 @@ SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
     'AUTH_HEADER_TYPES': ('Bearer',),
+}
+
+# Media Files
+if USE_S3 and HAS_DJANGO_STORAGES:
+    AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID', default='')
+    AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY', default='')
+    AWS_STORAGE_BUCKET_NAME = config('AWS_STORAGE_BUCKET_NAME', default='yessal-media')
+    AWS_S3_REGION_NAME = config('AWS_S3_REGION_NAME', default='us-east-1')
+    AWS_S3_ENDPOINT_URL = config('AWS_S3_ENDPOINT_URL', default='http://127.0.0.1:9000')
+    AWS_S3_ADDRESSING_STYLE = config('AWS_S3_ADDRESSING_STYLE', default='path')
+    AWS_S3_SIGNATURE_VERSION = config('AWS_S3_SIGNATURE_VERSION', default='s3v4')
+    AWS_DEFAULT_ACL = None
+    AWS_QUERYSTRING_AUTH = config('AWS_QUERYSTRING_AUTH', default=False, cast=bool)
+    AWS_S3_FILE_OVERWRITE = config('AWS_S3_FILE_OVERWRITE', default=False, cast=bool)
+    AWS_MEDIA_LOCATION = config('AWS_MEDIA_LOCATION', default='media')
+
+    STORAGES = {
+        'default': {
+            'BACKEND': 'storages.backends.s3boto3.S3Boto3Storage',
+            'OPTIONS': {
+                'bucket_name': AWS_STORAGE_BUCKET_NAME,
+                'location': AWS_MEDIA_LOCATION,
+                'default_acl': AWS_DEFAULT_ACL,
+                'file_overwrite': AWS_S3_FILE_OVERWRITE,
+            },
+        },
+        'staticfiles': {
+            'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
+        },
+    }
+    media_base = AWS_S3_ENDPOINT_URL.rstrip('/')
+    media_path = f"{AWS_STORAGE_BUCKET_NAME}/{AWS_MEDIA_LOCATION}".strip('/')
+    MEDIA_URL = config('MEDIA_URL', default=f"{media_base}/{media_path}/")
+    MEDIA_ROOT = BASE_DIR / 'media'
+else:
+    MEDIA_URL = '/media/'
+    MEDIA_ROOT = BASE_DIR / 'media'
+
+# Django Import Export
+IMPORT_EXPORT_USE_TRANSACTIONS = True
+
+# Bank transfer settings
+BANK_ACCOUNT = {
+    'bank_name': config('BANK_NAME', default='BICIS'),
+    'iban': config('BANK_IBAN', default='SN28 XXXX XXXX XXXX XXXX XXXX XXX'),
+    'bic': config('BANK_BIC', default='BICISSND'),
+    'account_name': config('BANK_ACCOUNT_NAME', default='Association Yessal Gui'),
+    'reference_format': config('BANK_REFERENCE_FORMAT', default='YG-{member_id}-{date}'),
 }
