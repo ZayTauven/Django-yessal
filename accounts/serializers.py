@@ -1,4 +1,4 @@
-﻿from django.contrib.auth import get_user_model
+from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.db.models import Q
 from rest_framework import serializers
@@ -266,6 +266,18 @@ class RegisterSerializer(serializers.ModelSerializer):
         return user
 
 
+class CustomRefreshToken(RefreshToken):
+    @classmethod
+    def for_user(cls, user):
+        token = super().for_user(user)
+        token['role'] = user.role
+        token['first_name'] = user.first_name
+        token['last_name'] = user.last_name
+        token['email'] = user.email
+        token['phone'] = user.phone
+        return token
+
+
 class LoginSerializer(serializers.Serializer):
     identifier = serializers.CharField()
     password = serializers.CharField(write_only=True)
@@ -283,7 +295,7 @@ class LoginSerializer(serializers.Serializer):
         if user.status != User.Status.ACTIVE:
             raise serializers.ValidationError("Votre compte n'est pas encore validé par un administrateur.")
 
-        refresh = RefreshToken.for_user(user)
+        refresh = CustomRefreshToken.for_user(user)
         attrs['refresh'] = str(refresh)
         attrs['access'] = str(refresh.access_token)
         attrs['user'] = user
