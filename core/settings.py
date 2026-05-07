@@ -13,17 +13,24 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 import warnings
 import sys
 from pathlib import Path
-from decouple import config
+from decouple import Config, RepositoryEnv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load environment variables from core/.env.local if present, otherwise fallback to system environment.
+ENV_PATH = BASE_DIR / 'core' / '.env.local'
+if ENV_PATH.exists():
+    config = Config(RepositoryEnv(str(ENV_PATH)))
+else:
+    config = Config()
 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = config('SECRET_KEY', default='django-insecure-y-l@h^10c9@1&uz)at+yf5p*)z%#gkk2#e=-e9d0zg0ue=rnrb')
+SECRET_KEY = config('SECRET_KEY', default='')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 def _coerce_debug(value):
@@ -37,9 +44,19 @@ def _coerce_debug(value):
     return False
 
 
+def _list_env(value):
+    if not value:
+        return []
+    return [item.strip() for item in str(value).split(',') if item.strip()]
+
+
 DEBUG = _coerce_debug(config('DEBUG', default='false'))
 
-ALLOWED_HOSTS = ['*'] if DEBUG else config('ALLOWED_HOSTS', default='localhost,127.0.0.1').split(',')
+ALLOWED_HOSTS = ['*'] if DEBUG else _list_env(config('ALLOWED_HOSTS', default='localhost,127.0.0.1'))
+
+CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=True, cast=bool)
+CORS_ALLOWED_ORIGINS = [] if CORS_ALLOW_ALL_ORIGINS else _list_env(config('CORS_ALLOWED_ORIGINS', default=''))
+CSRF_TRUSTED_ORIGINS = _list_env(config('CSRF_TRUSTED_ORIGINS', default=''))
 
 
 # Application definition
@@ -174,9 +191,10 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # CORS Settings
-CORS_ALLOW_ALL_ORIGINS = True # Set to False in production and configure CORS_ALLOWED_ORIGINS
+# Set this to False in production and configure CORS_ALLOWED_ORIGINS.
 
 # Django Rest Framework Settings
 REST_FRAMEWORK = {
@@ -234,9 +252,9 @@ IMPORT_EXPORT_USE_TRANSACTIONS = True
 
 # Bank transfer settings
 BANK_ACCOUNT = {
-    'bank_name': config('BANK_NAME', default='BICIS'),
-    'iban': config('BANK_IBAN', default='SN28 XXXX XXXX XXXX XXXX XXXX XXX'),
-    'bic': config('BANK_BIC', default='BICISSND'),
-    'account_name': config('BANK_ACCOUNT_NAME', default='Association Yessal Gui'),
-    'reference_format': config('BANK_REFERENCE_FORMAT', default='YG-{member_id}-{date}'),
+    'bank_name': config('BANK_NAME', default=''),
+    'iban': config('BANK_IBAN', default=''),
+    'bic': config('BANK_BIC', default=''),
+    'account_name': config('BANK_ACCOUNT_NAME', default=''),
+    'reference_format': config('BANK_REFERENCE_FORMAT', default=''),
 }

@@ -1,0 +1,66 @@
+version: "3.9"
+
+# Production configuration
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - yessal_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    restart: always
+    env_file:
+      - core/.env.local
+    environment:
+      DEBUG: "False"
+      DB_HOST: db
+      DB_PORT: 5432
+    networks:
+      - yessal_network
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  nginx:
+    image: nginx:alpine
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+      - web_staticfiles:/app/staticfiles:ro
+    depends_on:
+      - web
+    networks:
+      - yessal_network
+
+volumes:
+  postgres_data:
+    driver: local
+  web_staticfiles:
+    driver: local
+
+networks:
+  yessal_network:
+    driver: bridge

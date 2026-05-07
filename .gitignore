@@ -1,2 +1,12 @@
 core/.env
+core/.env.local
+core/.env.prod
+.env
 .venv
+*.pyc
+*.log
+*.tmp
+__pycache__/
+db.sqlite3
+media/
+staticfiles/
