@@ -10,27 +10,20 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
-import warnings
+import os
 import sys
 from pathlib import Path
-from decouple import Config, RepositoryEnv
+from decouple import config
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
-
-# Load environment variables from core/.env.local if present, otherwise fallback to system environment.
-ENV_PATH = BASE_DIR / 'core' / '.env.local'
-if ENV_PATH.exists():
-    config = Config(RepositoryEnv(str(ENV_PATH)))
-else:
-    config = Config()
 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = config('SECRET_KEY', default='')
+SECRET_KEY = config('SECRET_KEY', default='django-insecure-default-key-for-dev-purposes-only-replace-in-production')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 def _coerce_debug(value):
@@ -50,7 +43,7 @@ def _list_env(value):
     return [item.strip() for item in str(value).split(',') if item.strip()]
 
 
-DEBUG = _coerce_debug(config('DEBUG', default='false'))
+DEBUG = _coerce_debug(config('DEBUG', default='true'))
 
 ALLOWED_HOSTS = ['*'] if DEBUG else _list_env(config('ALLOWED_HOSTS', default='localhost,127.0.0.1'))
 
