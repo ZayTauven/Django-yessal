@@ -8,7 +8,7 @@ User = get_user_model()
 
 @receiver(post_save, sender=Donation)
 def notify_for_collector_payment(sender, instance, created, **kwargs):
-    if created and instance.payment_method == 'collector':
+    if created and instance.payment_method in {'collector', 'manual'}:
         donor = instance.donor
         campaign = instance.campaign
         daara = donor.daara

@@ -251,3 +251,11 @@ BANK_ACCOUNT = {
     'account_name': config('BANK_ACCOUNT_NAME', default=''),
     'reference_format': config('BANK_REFERENCE_FORMAT', default=''),
 }
+
+# Pusher settings for real-time chat
+PUSHER_APP_ID = config('PUSHER_APP_ID', default='2157369')
+PUSHER_KEY = config('PUSHER_KEY', default='0369577c46baf67bfc0a')
+PUSHER_SECRET = config('PUSHER_SECRET', default='2f6edb42cbc7120b33cb')
+PUSHER_CLUSTER = config('PUSHER_CLUSTER', default='eu')
+PUSHER_SSL = config('PUSHER_SSL', default=True, cast=bool)
+

@@ -49,13 +49,20 @@ class DirectoryUserSerializer(serializers.ModelSerializer):
     daara = DirectoryDaaraBriefSerializer(read_only=True)
     daara_name = serializers.CharField(source='daara.name', read_only=True, allow_null=True)
     title_name = serializers.CharField(source='title.name', read_only=True, allow_null=True)
+    avatar = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             'id', 'email', 'first_name', 'last_name', 'phone',
             'role', 'status', 'daara', 'daara_name', 'title_name',
+            'avatar', 'avatar_url',
         ]
+
+    def get_avatar(self, obj):
+        if obj.avatar:
+            return obj.avatar.url
+        return None
 
 
 class DaaraSerializer(serializers.ModelSerializer):
