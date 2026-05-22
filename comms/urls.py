@@ -6,6 +6,7 @@ from .views import (
     AnnouncementViewSet,
     NotificationViewSet,
     ChatInvitationViewSet,
+    FCMTokenView,
     pusher_auth,
     UserPreferencesView,
     MemberSearchView,
@@ -24,5 +25,6 @@ urlpatterns = [
     path('preferences/', UserPreferencesView.as_view(), name='user_preferences'),
     path('search-members/', MemberSearchView.as_view(), name='search_members'),
     path('pilotage/', PilotageConfigView.as_view(), name='pilotage_config'),
+    path('fcm-token/', FCMTokenView.as_view(), name='fcm_token'),
     path('', include(router.urls)),
 ]

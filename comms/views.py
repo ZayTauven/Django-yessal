@@ -15,6 +15,7 @@ from .models import (
     Chat,
     ChatInvitation,
     ChatMembership,
+    FCMToken,
     Message,
     MessageReaction,
     MessageReadReceipt,
@@ -469,6 +470,27 @@ class NotificationViewSet(viewsets.ModelViewSet):
     def mark_all_read(self, request):
         updated = self.get_queryset().filter(is_read=False).update(is_read=True)
         return Response({'updated': updated}, status=status.HTTP_200_OK)
+
+
+class FCMTokenView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        token = (request.data.get('token') or '').strip()
+        device_type = request.data.get('device_type', FCMToken.DeviceType.WEB)
+        if not token:
+            return Response({'error': 'token requis'}, status=status.HTTP_400_BAD_REQUEST)
+        FCMToken.objects.update_or_create(
+            token=token,
+            defaults={'user': request.user, 'device_type': device_type},
+        )
+        return Response({'status': 'registered'}, status=status.HTTP_200_OK)
+
+    def delete(self, request):
+        token = (request.data.get('token') or '').strip()
+        if token:
+            FCMToken.objects.filter(user=request.user, token=token).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class AnnouncementViewSet(viewsets.ModelViewSet):
