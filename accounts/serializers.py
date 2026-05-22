@@ -17,6 +17,15 @@ from .models import (
 
 User = get_user_model()
 
+def _absolute_or_raw_url(request, url: str | None):
+    if not url:
+        return None
+    if url.startswith('http://') or url.startswith('https://'):
+        return url
+    if request:
+        return request.build_absolute_uri(url)
+    return url
+
 
 class PilotageSettingsSerializer(serializers.ModelSerializer):
     class Meta:
@@ -50,6 +59,7 @@ class DirectoryUserSerializer(serializers.ModelSerializer):
     daara_name = serializers.CharField(source='daara.name', read_only=True, allow_null=True)
     title_name = serializers.CharField(source='title.name', read_only=True, allow_null=True)
     avatar = serializers.SerializerMethodField()
+    avatar_url = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -61,8 +71,13 @@ class DirectoryUserSerializer(serializers.ModelSerializer):
 
     def get_avatar(self, obj):
         if obj.avatar:
-            return obj.avatar.url
+            request = self.context.get('request')
+            return _absolute_or_raw_url(request, obj.avatar.url)
         return None
+
+    def get_avatar_url(self, obj):
+        request = self.context.get('request')
+        return _absolute_or_raw_url(request, obj.avatar_url)
 
 
 class DaaraSerializer(serializers.ModelSerializer):
@@ -166,6 +181,8 @@ class UserDocumentValidationSerializer(serializers.ModelSerializer):
 
 
 class UserSerializer(serializers.ModelSerializer):
+    avatar = serializers.SerializerMethodField()
+    avatar_url = serializers.SerializerMethodField()
     daara = DaaraSerializer(read_only=True)
     daara_id = serializers.PrimaryKeyRelatedField(
         queryset=Daara.objects.all(),
@@ -203,6 +220,16 @@ class UserSerializer(serializers.ModelSerializer):
 
     def get_is_admin(self, obj):
         return obj.role == User.Role.ADMIN or obj.is_staff
+
+    def get_avatar(self, obj):
+        if obj.avatar:
+            request = self.context.get('request')
+            return _absolute_or_raw_url(request, obj.avatar.url)
+        return None
+
+    def get_avatar_url(self, obj):
+        request = self.context.get('request')
+        return _absolute_or_raw_url(request, obj.avatar_url)
 
     def create(self, validated_data):
         password = validated_data.pop('password', None)
