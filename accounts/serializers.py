@@ -143,19 +143,36 @@ class DaaraSerializer(serializers.ModelSerializer):
 
 
 class TutelleSerializer(serializers.ModelSerializer):
+    avatar_url = serializers.SerializerMethodField()
+    phone = serializers.SerializerMethodField()
+
     class Meta:
         model = Tutelle
-        fields = '__all__'
+        fields = ['id', 'first_name', 'last_name', 'relation', 'tutor', 'linked_user', 'avatar_url', 'phone', 'created_at']
         read_only_fields = ('tutor', 'linked_user')
+
+    def get_avatar_url(self, obj):
+        if obj.linked_user:
+            request = self.context.get('request')
+            return _absolute_or_raw_url(request, obj.linked_user.avatar_url)
+        return None
+
+    def get_phone(self, obj):
+        if obj.linked_user:
+            return obj.linked_user.phone
+        return None
 
 
 class UserDocumentSerializer(serializers.ModelSerializer):
+    type_display = serializers.CharField(source='get_doc_type_display', read_only=True)
+
     class Meta:
         model = UserDocument
         fields = [
             'id',
             'user',
             'doc_type',
+            'type_display',
             'image',
             'image_verso',
             'doc_number',
@@ -192,6 +209,7 @@ class UserSerializer(serializers.ModelSerializer):
         allow_null=True,
     )
     daara_name = serializers.CharField(source='daara.name', read_only=True, allow_null=True)
+    ldd_name = serializers.SerializerMethodField()
     is_admin = serializers.SerializerMethodField()
     password = serializers.CharField(write_only=True, required=False, style={'input_type': 'password'})
 
@@ -203,19 +221,21 @@ class UserSerializer(serializers.ModelSerializer):
         required=False,
         allow_null=True,
     )
+    title_name = serializers.CharField(source='title.name', read_only=True, allow_null=True)
 
     class Meta:
         model = User
         fields = [
             'id', 'email', 'first_name', 'last_name', 'phone',
-            'role', 'status', 'daara', 'daara_id', 'daara_name',
+            'role', 'status', 'daara', 'daara_id', 'daara_name', 'ldd_name',
             'password',
             'avatar_url', 'avatar', 'last_active_at',
             'is_admin',
-            'title', 'title_id', 'title_change_count', 'title_changed_at',
+            'title', 'title_id', 'title_name', 'title_change_count', 'title_changed_at',
             'birth_date', 'gender', 'residence_country',
             'city', 'address', 'state', 'zip_code',
             'marital_status', 'blood_type',
+            'date_joined',
         ]
 
     def get_is_admin(self, obj):
@@ -230,6 +250,11 @@ class UserSerializer(serializers.ModelSerializer):
     def get_avatar_url(self, obj):
         request = self.context.get('request')
         return _absolute_or_raw_url(request, obj.avatar_url)
+
+    def get_ldd_name(self, obj):
+        if obj.daara and obj.daara.ldd:
+            return obj.daara.ldd.name
+        return None
 
     def create(self, validated_data):
         password = validated_data.pop('password', None)

@@ -31,6 +31,49 @@ def trigger_pusher(channel, event, payload):
         return False
     return True
 
+def send_fcm_push(user_id: int, title: str, body: str, data: dict | None = None) -> None:
+    """
+    Sends an FCM push notification to all registered tokens for a user.
+    Requires FIREBASE_CREDENTIALS_PATH in Django settings pointing to a
+    service-account JSON downloaded from Firebase Console → Project Settings → Service Accounts.
+    Silently no-ops if firebase-admin is not installed or not configured.
+    """
+    try:
+        import firebase_admin
+        from firebase_admin import credentials, messaging
+
+        if not firebase_admin._apps:
+            cred_path = getattr(settings, 'FIREBASE_CREDENTIALS_PATH', None)
+            if not cred_path:
+                return
+            cred = credentials.Certificate(cred_path)
+            firebase_admin.initialize_app(cred)
+
+        from .models import FCMToken
+        tokens = list(FCMToken.objects.filter(user_id=user_id).values_list('token', flat=True))
+        if not tokens:
+            return
+
+        multicast = messaging.MulticastMessage(
+            notification=messaging.Notification(title=title, body=body),
+            data={k: str(v) for k, v in (data or {}).items()},
+            tokens=tokens,
+        )
+        batch_response = messaging.send_each_for_multicast(multicast)
+
+        # Remove invalidated tokens
+        invalid_tokens = []
+        for idx, resp in enumerate(batch_response.responses):
+            if not resp.success and resp.exception:
+                code = getattr(resp.exception, 'code', '')
+                if code in ('registration-token-not-registered', 'invalid-argument'):
+                    invalid_tokens.append(tokens[idx])
+        if invalid_tokens:
+            FCMToken.objects.filter(token__in=invalid_tokens).delete()
+    except Exception:
+        pass  # Never block the main flow
+
+
 def get_effective_config(user):
     """
     Retourne la MessagingPilotageConfig applicable à cet utilisateur.

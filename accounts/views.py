@@ -86,6 +86,14 @@ class ProfileView(generics.RetrieveUpdateAPIView):
         ctx['request'] = self.request
         return ctx
 
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = ProfileUpdateSerializer(instance, data=request.data, partial=partial, context=self.get_serializer_context())
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        return Response(UserSerializer(instance, context=self.get_serializer_context()).data)
+
 
 class LDDViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = LDDSerializer
@@ -203,7 +211,7 @@ class DirectoryUserViewSet(viewsets.ReadOnlyModelViewSet):
         if request.user.role == User.Role.ADMIN:
             target.role = User.Role.COLLECTOR
             target.save(update_fields=['role'])
-            return Response(DirectoryUserSerializer(target).data, status=status.HTTP_200_OK)
+            return Response(DirectoryUserSerializer(target, context={'request': request}).data, status=status.HTTP_200_OK)
 
         if request.user.role != User.Role.CHEF_DAARA:
             return Response(
@@ -217,7 +225,7 @@ class DirectoryUserViewSet(viewsets.ReadOnlyModelViewSet):
 
         target.role = User.Role.COLLECTOR
         target.save(update_fields=['role'])
-        return Response(DirectoryUserSerializer(target).data, status=status.HTTP_200_OK)
+        return Response(DirectoryUserSerializer(target, context={'request': request}).data, status=status.HTTP_200_OK)
 
 
 class MemberTitleViewSet(viewsets.ModelViewSet):
@@ -368,7 +376,7 @@ class MemberAssignTitleView(APIView):
         user.title_change_count = user.title_change_count + 1
         user.title_changed_at = timezone.now()
         user.save(update_fields=['title', 'title_change_count', 'title_changed_at'])
-        return Response(UserSerializer(user).data)
+        return Response(UserSerializer(user, context={'request': request}).data)
 
 
 class TutelleViewSet(viewsets.ModelViewSet):
@@ -386,48 +394,99 @@ class AnalyticsViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def list(self, request):
+        import datetime
+        from django.db.models import Q
+        from django.db.models.functions import TruncMonth
+
         user = request.user
         role = user.role
+        today = timezone.now().date()
 
-        all_donations = Donation.objects.filter(payment_status='confirmed')
+        # Admin can request stats for a specific user
+        target_user_id = request.query_params.get('user_id')
+        if target_user_id and role == 'admin':
+            try:
+                user = User.objects.get(pk=target_user_id)
+                role = user.role
+            except User.DoesNotExist:
+                pass
+
+        confirmed_qs = Donation.objects.filter(payment_status='confirmed')
         all_campaigns = Campaign.objects.filter(status='active')
 
         if role == 'admin':
-            pass
+            all_donations = confirmed_qs
         elif role == 'chef_daara':
             if user.daara:
-                all_donations = all_donations.filter(donor__daara=user.daara)
+                all_donations = confirmed_qs.filter(donor__daara=user.daara)
                 all_campaigns = all_campaigns.filter(daara=user.daara) | all_campaigns.filter(daara__isnull=True)
+            else:
+                all_donations = confirmed_qs.none()
         elif role == 'collector':
-            all_donations = all_donations.filter(collector=user)
+            all_donations = confirmed_qs.filter(collector=user)
         else:
-            all_donations = all_donations.filter(donor=user)
+            all_donations = confirmed_qs.filter(donor=user)
+
+        # ── Current vs previous month for real change values ──────────────
+        first_this_month = today.replace(day=1)
+        first_last_month = (first_this_month - datetime.timedelta(days=1)).replace(day=1)
+
+        amount_this_month = all_donations.filter(
+            created_at__date__gte=first_this_month
+        ).aggregate(Sum('amount'))['amount__sum'] or 0
+        amount_last_month = all_donations.filter(
+            created_at__date__gte=first_last_month,
+            created_at__date__lt=first_this_month,
+        ).aggregate(Sum('amount'))['amount__sum'] or 0
+
+        if amount_last_month > 0:
+            pct = ((amount_this_month - amount_last_month) / amount_last_month) * 100
+            change_amount = f"{'+' if pct >= 0 else ''}{pct:.0f}%"
+        elif amount_this_month > 0:
+            change_amount = "Nouveau"
+        else:
+            change_amount = "—"
 
         total_amount = all_donations.aggregate(Sum('amount'))['amount__sum'] or 0
         donation_count = all_donations.count()
         active_campaigns_count = all_campaigns.count()
 
+        count_this_month = all_donations.filter(created_at__date__gte=first_this_month).count()
+        count_last_month = all_donations.filter(
+            created_at__date__gte=first_last_month,
+            created_at__date__lt=first_this_month,
+        ).count()
+        change_count = f"+{count_this_month - count_last_month}" if count_this_month >= count_last_month else str(count_this_month - count_last_month)
+
+        # ── KPIs ──────────────────────────────────────────────────────────
         kpis = []
-        if role != 'member':
-            kpis.append({'title': 'Total Dons', 'value': f'{int(total_amount):,} FCFA', 'change': '+12%', 'icon': 'Wallet'})
-
-        kpis.extend(
-            [
-                {'title': 'Contributions', 'value': str(donation_count), 'change': '+2', 'icon': 'HandCoins'},
-                {'title': 'Campagnes', 'value': str(active_campaigns_count), 'change': 'Actives', 'icon': 'Landmark'},
-            ]
-        )
-
-        if role == 'collector':
-            today_total = all_donations.filter(created_at__date=timezone.now().date()).aggregate(Sum('amount'))['amount__sum'] or 0
+        if role == 'admin':
+            members_count = User.objects.filter(status='active').count()
+            kpis.append({'title': 'Total Collecté', 'value': f'{int(total_amount):,} FCFA', 'change': change_amount, 'icon': 'Wallet', 'href': '/dashboard/donations'})
+            kpis.append({'title': 'Membres Actifs', 'value': str(members_count), 'change': f"{User.objects.filter(status='pending').count()} en attente", 'icon': 'Users', 'href': '/dashboard/admin/users'})
+            kpis.append({'title': 'Contributions', 'value': str(donation_count), 'change': change_count, 'icon': 'HandCoins', 'href': '/dashboard/donations'})
+            kpis.append({'title': 'Jëfs Actifs', 'value': str(active_campaigns_count), 'change': 'En cours', 'icon': 'Landmark', 'href': '/dashboard/campaigns'})
+        elif role == 'chef_daara':
+            daara_members = User.objects.filter(daara=user.daara, status='active').count() if user.daara else 0
+            kpis.append({'title': 'Total Daara', 'value': f'{int(total_amount):,} FCFA', 'change': change_amount, 'icon': 'Wallet'})
+            kpis.append({'title': 'Talibés', 'value': str(daara_members), 'change': 'Actifs', 'icon': 'Users'})
+            kpis.append({'title': 'Contributions', 'value': str(donation_count), 'change': change_count, 'icon': 'HandCoins'})
+            kpis.append({'title': 'Jëfs Actifs', 'value': str(active_campaigns_count), 'change': 'En cours', 'icon': 'Landmark'})
+        elif role == 'collector':
+            today_total = all_donations.filter(created_at__date=today).aggregate(Sum('amount'))['amount__sum'] or 0
+            week_start = today - datetime.timedelta(days=today.weekday())
+            week_total = all_donations.filter(created_at__date__gte=week_start).aggregate(Sum('amount'))['amount__sum'] or 0
+            kpis.append({'title': 'Total Collecté', 'value': f'{int(total_amount):,} FCFA', 'change': change_amount, 'icon': 'Wallet'})
             kpis.append({'title': "Aujourd'hui", 'value': f'{int(today_total):,} FCFA', 'change': 'Journalier', 'icon': 'TrendingUp'})
-        else:
+            kpis.append({'title': 'Cette semaine', 'value': f'{int(week_total):,} FCFA', 'change': 'Hebdo', 'icon': 'HandCoins'})
+            kpis.append({'title': 'Contributions', 'value': str(donation_count), 'change': change_count, 'icon': 'Landmark'})
+        else:  # member
+            kpis.append({'title': 'Mes Contributions', 'value': f'{int(total_amount):,} FCFA', 'change': change_amount, 'icon': 'Wallet'})
+            kpis.append({'title': 'Nombre de dons', 'value': str(donation_count), 'change': change_count, 'icon': 'HandCoins'})
+            kpis.append({'title': 'Jëfs Actifs', 'value': str(active_campaigns_count), 'change': 'En cours', 'icon': 'Landmark'})
             kpis.append({'title': 'Tutelles', 'value': str(user.tutelles.count()), 'change': 'Membres', 'icon': 'Users'})
 
-        import datetime
-        from django.db.models.functions import TruncMonth
-
-        bar_chart = []
+        # ── Charts ────────────────────────────────────────────────────────
         six_months_ago = timezone.now() - datetime.timedelta(days=180)
         monthly_stats = (
             all_donations.filter(created_at__gte=six_months_ago)
@@ -436,88 +495,134 @@ class AnalyticsViewSet(viewsets.ViewSet):
             .annotate(total=Sum('amount'))
             .order_by('month')
         )
-
         months_map = {}
         for entry in monthly_stats:
             m_str = entry['month'].strftime('%b')
             if m_str not in months_map:
                 months_map[m_str] = {'month': m_str, 'online': 0, 'manual': 0}
-
-            if entry['payment_method'] in ['wave', 'orange_money', 'card', 'bictorys']:
+            if entry['payment_method'] in ['wave', 'orange_money', 'card', 'bictorys', 'visa', 'mastercard']:
                 months_map[m_str]['online'] += int(entry['total'])
             else:
                 months_map[m_str]['manual'] += int(entry['total'])
         bar_chart = list(months_map.values())
 
-        method_stats = all_donations.values('payment_method').annotate(dons=Count('id'))
-        pie_chart = []
         method_labels = {
-            'wave': 'Wave',
-            'orange_money': 'Orange Money',
-            'manual': 'Espèces',
-            'virement': 'Virement',
-            'bictorys': 'Bictorys',
+            'wave': 'Wave', 'orange_money': 'Orange Money',
+            'manual': 'Espèces', 'virement': 'Virement',
+            'bictorys': 'Bictorys', 'visa': 'Visa', 'mastercard': 'Mastercard',
+            'collector': 'Collecteur',
         }
-        for entry in method_stats:
+        pie_chart = []
+        for entry in all_donations.values('payment_method').annotate(dons=Count('id')):
             method = entry['payment_method']
-            pie_chart.append(
-                {
-                    'method': method_labels.get(method, method.replace('_', ' ').title()),
-                    'dons': entry['dons'],
-                    'fill': f"var(--chart-{len(pie_chart) + 1})",
-                }
-            )
+            pie_chart.append({
+                'method': method_labels.get(method, method.replace('_', ' ').title()),
+                'dons': entry['dons'],
+                'fill': f"var(--chart-{len(pie_chart) + 1})",
+            })
 
         area_chart = []
-        today = timezone.now().date()
         for i in range(6, -1, -1):
             d = today - datetime.timedelta(days=i)
             day_total = all_donations.filter(created_at__date=d).aggregate(Sum('amount'))['amount__sum'] or 0
-            area_chart.append({'name': d.strftime('%d/%m'), 'total': day_total})
+            area_chart.append({'name': d.strftime('%d/%m'), 'total': int(day_total)})
 
+        # ── Donations trend for pie chart ─────────────────────────────────
+        donations_trend = change_amount
+
+        # ── Announcements ─────────────────────────────────────────────────
         from comms.models import Announcement
         from comms.serializers import AnnouncementSerializer
-
         announcements_qs = Announcement.objects.filter(is_published=True).order_by('-created_at')
         if role != 'admin':
-            from django.db.models import Q
-
             announcements_qs = announcements_qs.filter(Q(target='global') | Q(daara=user.daara))
-        latest_announcements = AnnouncementSerializer(announcements_qs[:3], many=True).data
+        latest_announcements = AnnouncementSerializer(announcements_qs[:5], many=True).data
 
+        # ── Collectors performance (chef_daara) ───────────────────────────
         collectors_data = []
         if role == 'chef_daara' and user.daara:
-            collectors = User.objects.filter(daara=user.daara, role='collector')
-            for c in collectors:
-                c_dons = Donation.objects.filter(collector=c, payment_status='confirmed').count()
-                collectors_data.append(
-                    {
-                        'id': c.id,
-                        'first_name': c.first_name,
-                        'last_name': c.last_name,
-                        'donations_count': c_dons,
-                    }
-                )
+            for c in User.objects.filter(daara=user.daara, role='collector'):
+                c_dons = confirmed_qs.filter(collector=c).count()
+                collectors_data.append({
+                    'id': c.id, 'first_name': c.first_name,
+                    'last_name': c.last_name, 'donations_count': c_dons,
+                })
 
+        # ── Campaign donations (member view) ──────────────────────────────
         campaign_donations = []
         for c in all_campaigns:
             c_total = all_donations.filter(campaign=c).aggregate(Sum('amount'))['amount__sum'] or 0
-            campaign_donations.append({'id': c.id, 'name': c.name, 'total': c_total})
+            campaign_donations.append({'id': c.id, 'name': c.name, 'total': int(c_total)})
 
-        return Response(
-            {
-                'role': role,
-                'kpis': kpis,
-                'bar_chart': bar_chart,
-                'pie_chart': pie_chart,
-                'area_chart': area_chart,
-                'chartData': area_chart,
-                'campaign_donations': campaign_donations,
-                'daara': user.daara.name if user.daara else None,
-                'announcements': latest_announcements,
-                'collectors': collectors_data,
-            }
-        )
+        # ── Recent collects (collector) ───────────────────────────────────
+        recent_collects = []
+        if role == 'collector':
+            recent_qs = all_donations.select_related('donor', 'campaign').order_by('-created_at')[:10]
+            for don in recent_qs:
+                donor = don.donor
+                recent_collects.append({
+                    'id': don.id,
+                    'donor_name': f"{donor.first_name} {donor.last_name}".strip() if donor else "—",
+                    'campaign_name': don.campaign.name if don.campaign else None,
+                    'amount': int(don.amount),
+                    'created_at': don.created_at.isoformat(),
+                    'status': don.payment_status,
+                })
+
+        # ── Alerts (admin only) ───────────────────────────────────────────
+        alerts = []
+        if role == 'admin':
+            pending_users = User.objects.filter(status='pending').count()
+            if pending_users > 0:
+                alerts.append({
+                    'id': 'pending_users', 'title': f"{pending_users} inscription(s) en attente",
+                    'badge': 'Validation', 'severity': 'warning',
+                })
+            wire_pending = Donation.objects.filter(payment_status='pending_wire').count()
+            if wire_pending > 0:
+                alerts.append({
+                    'id': 'wire_pending', 'title': f"{wire_pending} virement(s) à confirmer",
+                    'badge': 'Virement', 'severity': 'critical',
+                })
+            ending_soon = Campaign.objects.filter(
+                status='active', deadline__lte=today + datetime.timedelta(days=7)
+            ).count()
+            if ending_soon > 0:
+                alerts.append({
+                    'id': 'ending_soon', 'title': f"{ending_soon} Jëf(s) se terminent dans 7 jours",
+                    'badge': 'Échéance', 'severity': 'info',
+                })
+            doc_pending = UserDocument.objects.filter(status='pending').count()
+            if doc_pending > 0:
+                alerts.append({
+                    'id': 'doc_pending', 'title': f"{doc_pending} document(s) à valider",
+                    'badge': 'Documents', 'severity': 'info',
+                })
+
+        # ── Members evolution (admin) ─────────────────────────────────────
+        members_evolution = []
+        if role == 'admin':
+            for i in range(6, -1, -1):
+                d = today - datetime.timedelta(days=i)
+                count = User.objects.filter(date_joined__date__lte=d, status='active').count()
+                members_evolution.append({'name': d.strftime('%d/%m'), 'total': count})
+
+        return Response({
+            'role': role,
+            'kpis': kpis,
+            'bar_chart': bar_chart,
+            'pie_chart': pie_chart,
+            'area_chart': area_chart,
+            'chartData': area_chart,
+            'members_evolution': members_evolution if role == 'admin' else area_chart,
+            'donations_trend': donations_trend,
+            'campaign_donations': campaign_donations,
+            'daara': user.daara.name if user.daara else None,
+            'announcements': latest_announcements,
+            'collectors': collectors_data,
+            'recent_collects': recent_collects,
+            'alerts': alerts,
+        })
 
     @action(detail=False, methods=['get'], url_path='campaign-metrics', permission_classes=[permissions.IsAdminUser])
     def campaign_metrics(self, request):
@@ -559,7 +664,7 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class UserManagementViewSet(viewsets.ModelViewSet):
-    queryset = User.objects.all().order_by('-date_joined')
+    queryset = User.objects.select_related('daara__ldd', 'title').all().order_by('-date_joined')
     serializer_class = UserSerializer
     permission_classes = [permissions.IsAdminUser]
     filter_backends = [filters.SearchFilter]
@@ -578,6 +683,12 @@ class UserManagementViewSet(viewsets.ModelViewSet):
         user.status = User.Status.BLOCKED
         user.save(update_fields=['status'])
         return Response({'status': 'user blocked'})
+
+    @action(detail=True, methods=['get'], url_path='tutelle')
+    def tutelle(self, request, pk=None):
+        user = self.get_object()
+        tutelles = Tutelle.objects.filter(tutor=user).select_related('linked_user')
+        return Response(TutelleSerializer(tutelles, many=True, context={'request': request}).data)
 
     def perform_create(self, serializer):
         serializer.save(status=User.Status.ACTIVE)

@@ -1,8 +1,8 @@
 from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 from django.conf import settings
-from .models import Message, MessageReaction, ChatInvitation
-from .services import trigger_pusher
+from .models import Message, MessageReaction, ChatInvitation, Notification
+from .services import trigger_pusher, send_fcm_push
 
 @receiver(post_save, sender=Message)
 def broadcast_message(sender, instance, created, **kwargs):
@@ -79,6 +79,17 @@ def broadcast_invitation(sender, instance, created, **kwargs):
                 'chat_name': instance.chat.name if instance.chat else None,
             }
         )
+
+@receiver(post_save, sender=Notification)
+def push_notification_to_fcm(sender, instance, created, **kwargs):
+    if created:
+        send_fcm_push(
+            user_id=instance.user_id,
+            title=instance.title,
+            body=instance.message,
+            data={'url': '/dashboard/notifications'},
+        )
+
 
 @receiver(post_save, sender=settings.AUTH_USER_MODEL)
 def create_messaging_preferences(sender, instance, created, **kwargs):

@@ -261,6 +261,29 @@ class Notification(models.Model):
     def __str__(self):
         return f"Notification for {self.user.email} - {self.title}"
 
+
+class FCMToken(models.Model):
+    class DeviceType(models.TextChoices):
+        WEB = 'web', _('Web')
+        ANDROID = 'android', _('Android')
+        IOS = 'ios', _('iOS')
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='fcm_tokens',
+    )
+    token = models.TextField(unique=True)
+    device_type = models.CharField(max_length=10, choices=DeviceType.choices, default=DeviceType.WEB)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'FCM Token'
+
+    def __str__(self):
+        return f"FCMToken({self.device_type}) – {self.user_id}"
+
 class Announcement(models.Model):
     class Target(models.TextChoices):
         GLOBAL = 'global', _('Global')
