@@ -16,9 +16,11 @@ services:
       DB_HOST: db
       DB_PORT: 5432
       DJANGO_SETTINGS_MODULE: core.settings
+      FIREBASE_CREDENTIALS_PATH: /run/secrets/firebase/firebase-sa.json
     volumes:
       - .:/app
       - media_data:/app/media
+      - ../AGENTS/firebase/yessal-gui-6d7e0-firebase-adminsdk-fbsvc-35ea30d759.json:/run/secrets/firebase/firebase-sa.json:ro
     ports:
       - "8000:8000"
     depends_on:

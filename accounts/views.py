@@ -134,6 +134,91 @@ class DaaraViewSet(viewsets.ModelViewSet):
             return qs
         return qs.filter(is_active=True)
 
+    @action(detail=True, methods=['get'], url_path='etat', permission_classes=[permissions.IsAdminUser])
+    def etat(self, request, pk=None):
+        daara = Daara.objects.select_related('ldd', 'chef', 'chef__title').get(pk=pk)
+
+        def _avatar(u):
+            if not u:
+                return None
+            if u.avatar:
+                return request.build_absolute_uri(u.avatar.url)
+            return u.avatar_url or None
+
+        def _user_dict(u):
+            return {
+                'id': u.id,
+                'first_name': u.first_name,
+                'last_name': u.last_name,
+                'email': u.email,
+                'phone': u.phone,
+                'role': u.role,
+                'avatar': _avatar(u),
+                'title_name': u.title.name if u.title else None,
+            }
+
+        members_qs = (
+            User.objects
+            .filter(daara=daara, is_active=True)
+            .select_related('title')
+            .order_by('role', 'last_name', 'first_name')
+        )
+        members_data = [_user_dict(u) for u in members_qs]
+        collectors_data = [m for m in members_data if m['role'] == User.Role.COLLECTOR]
+
+        # Chef comes from the Daara.chef FK (authoritative), fallback to role scan
+        chef_data = None
+        if daara.chef:
+            chef_data = _user_dict(daara.chef)
+        else:
+            chef_data = next((m for m in members_data if m['role'] == User.Role.CHEF_DAARA), None)
+
+        donations_qs = Donation.objects.filter(
+            donor__daara=daara,
+            payment_status=Donation.PaymentStatus.CONFIRMED,
+        )
+        total_collected = donations_qs.aggregate(total=Sum('amount'))['total'] or 0
+        donation_count = donations_qs.count()
+
+        campaigns_qs = Campaign.objects.filter(daara=daara).select_related('organizer').order_by('-created_at')
+        campaigns_data = []
+        for c in campaigns_qs:
+            c_collected = (
+                Donation.objects
+                .filter(campaign=c, payment_status='confirmed')
+                .aggregate(t=Sum('amount'))['t'] or 0
+            )
+            goal = float(c.goal_amount) if c.goal_amount else 0
+            pct = round(float(c_collected) / goal * 100, 1) if goal > 0 else 0
+            campaigns_data.append({
+                'id': c.id,
+                'name': c.name,
+                'goal_amount': str(c.goal_amount) if c.goal_amount else None,
+                'collected_amount': str(c_collected),
+                'progress_pct': pct,
+                'status': c.get_effective_status(),
+                'deadline': str(c.deadline),
+                'organizer_name': c.organizer.get_full_name() if c.organizer else None,
+            })
+
+        ldd = daara.ldd
+        return Response({
+            'id': daara.id,
+            'name': daara.name,
+            'is_active': daara.is_active,
+            'created_at': daara.created_at.isoformat() if daara.created_at else None,
+            'ldd': {'id': ldd.id, 'code': ldd.code, 'name': ldd.name} if ldd else None,
+            'chef': chef_data,
+            'members_count': members_qs.count(),
+            'collectors_count': len(collectors_data),
+            'total_collected': str(total_collected),
+            'donation_count': donation_count,
+            'campaigns_count': campaigns_qs.count(),
+            'members': members_data,
+            'collectors': collectors_data,
+            'campaigns': campaigns_data,
+        })
+
     @action(detail=False, methods=['post'], url_path='import-excel')
     def import_excel(self, request):
         if 'file' not in request.FILES:

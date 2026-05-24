@@ -12,11 +12,13 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 import os
 import sys
+import warnings
 from pathlib import Path
 from decouple import config
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+FIREBASE_SERVICE_ACCOUNT_FILENAME = 'yessal-gui-6d7e0-firebase-adminsdk-fbsvc-35ea30d759.json'
 
 
 # Quick-start development settings - unsuitable for production
@@ -258,4 +260,13 @@ PUSHER_KEY = config('PUSHER_KEY', default='0369577c46baf67bfc0a')
 PUSHER_SECRET = config('PUSHER_SECRET', default='2f6edb42cbc7120b33cb')
 PUSHER_CLUSTER = config('PUSHER_CLUSTER', default='eu')
 PUSHER_SSL = config('PUSHER_SSL', default=True, cast=bool)
+
+# Firebase Cloud Messaging
+_firebase_credentials_default = Path('/run/secrets/firebase/firebase-sa.json')
+_firebase_credentials_fallback = BASE_DIR.parent / 'AGENTS' / 'firebase' / FIREBASE_SERVICE_ACCOUNT_FILENAME
+FIREBASE_CREDENTIALS_PATH = Path(
+    config('FIREBASE_CREDENTIALS_PATH', default=str(_firebase_credentials_default))
+)
+if not FIREBASE_CREDENTIALS_PATH.exists() and _firebase_credentials_fallback.exists():
+    FIREBASE_CREDENTIALS_PATH = _firebase_credentials_fallback
 

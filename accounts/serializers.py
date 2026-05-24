@@ -128,6 +128,7 @@ class DaaraSerializer(serializers.ModelSerializer):
         return None
 
     def get_collectors(self, obj):
+        request = self.context.get('request')
         qs = User.objects.filter(daara=obj, role=User.Role.COLLECTOR).order_by('last_name', 'first_name')
         return [
             {
@@ -136,7 +137,8 @@ class DaaraSerializer(serializers.ModelSerializer):
                 'last_name': u.last_name,
                 'email': u.email,
                 'phone': u.phone,
-                'avatar_url': u.avatar_url,
+                'avatar': _absolute_or_raw_url(request, u.avatar.url if u.avatar else None),
+                'avatar_url': _absolute_or_raw_url(request, u.avatar_url),
             }
             for u in qs
         ]

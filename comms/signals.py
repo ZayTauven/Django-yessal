@@ -9,17 +9,42 @@ def broadcast_message(sender, instance, created, **kwargs):
     if created:
         if instance.message_type == 'system':
             return
+        sender_obj = instance.sender
+        sender_name = sender_obj.get_full_name() or sender_obj.email or str(sender_obj.id)
+        sender_avatar = None
+        try:
+            if sender_obj.avatar:
+                sender_avatar = sender_obj.avatar.url
+        except Exception:
+            pass
+        if not sender_avatar:
+            sender_avatar = getattr(sender_obj, 'avatar_url', None)
+
+        file_url = None
+        try:
+            if instance.file:
+                file_url = instance.file.url
+        except Exception:
+            pass
+
         trigger_pusher(
             f'private-chat.{instance.chat_id}',
             'new-message',
             {
                 'id': instance.id,
+                'chat': instance.chat_id,
                 'message_type': instance.message_type,
                 'content': instance.content,
-                'file_url': instance.file.url if instance.file else None,
-                'sender_id': instance.sender_id,
-                'sender_name': instance.sender.get_full_name() or instance.sender.email or str(instance.sender.id),
-                'reply_to_id': instance.reply_to_id,
+                'file_url': file_url,
+                'sender': {
+                    'id': instance.sender_id,
+                    'name': sender_name,
+                    'avatar': sender_avatar,
+                    'role': getattr(sender_obj, 'role', None),
+                },
+                'reply_to': instance.reply_to_id,
+                'reactions': [],
+                'is_deleted': False,
                 'sent_at': instance.sent_at.isoformat(),
             }
         )

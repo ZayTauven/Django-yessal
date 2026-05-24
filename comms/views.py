@@ -168,7 +168,7 @@ class ChatViewSet(viewsets.ModelViewSet):
         chat = self.get_object()
         memberships = chat.memberships.select_related('user', 'user__daara')
         members = [m.user for m in memberships]
-        return Response(UserBriefSerializer(members, many=True).data)
+        return Response(UserBriefSerializer(members, many=True, context={'request': request}).data)
 
 
 class MessageViewSet(viewsets.ModelViewSet):
@@ -396,7 +396,7 @@ class MemberSearchView(APIView):
             if can_invite(request.user, u):
                 admissible_users.append(u)
 
-        return Response(UserBriefSerializer(admissible_users[:20], many=True).data)
+        return Response(UserBriefSerializer(admissible_users[:20], many=True, context={'request': request}).data)
 
 
 class PilotageConfigView(APIView):

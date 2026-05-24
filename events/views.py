@@ -47,7 +47,7 @@ class FeteViewSet(viewsets.ModelViewSet):
     search_fields = ['name', 'description']
 
     def get_permissions(self):
-        if self.action in {'list', 'retrieve'}:
+        if self.action in {'list', 'retrieve', 'etat'}:
             return [permissions.IsAuthenticated()]
         return [permissions.IsAdminUser()]
 
@@ -75,6 +75,68 @@ class FeteViewSet(viewsets.ModelViewSet):
             for user in targets
         ]
         Notification.objects.bulk_create(notifications, batch_size=500)
+
+    @action(detail=True, methods=['get'], url_path='etat')
+    def etat(self, request, pk=None):
+        fete = self.get_object()
+        from contributions.models import Donation
+
+        campaigns = Campaign.objects.filter(fete=fete).select_related('daara', 'organizer').order_by('-created_at')
+        donations = (
+            Donation.objects
+            .filter(campaign__fete=fete, payment_status=Donation.PaymentStatus.CONFIRMED)
+            .select_related('donor', 'donor__daara', 'campaign')
+            .order_by('-created_at')
+        )
+
+        total_collected = donations.aggregate(total=Sum('amount'))['total'] or 0
+        donation_count = donations.count()
+
+        contributions = []
+        for d in donations:
+            donor_name = d.donor.get_full_name().strip() if d.donor else ''
+            member_name = 'Contributeur anonyme' if d.is_anonymous else (donor_name or getattr(d.donor, 'email', '') or getattr(d.donor, 'phone', '') or str(d.donor_id))
+            contributions.append({
+                'member_name': member_name,
+                'member_id': d.donor_id,
+                'daara_name': d.donor.daara.name if d.donor and d.donor.daara else None,
+                'campaign_name': d.campaign.name if d.campaign else None,
+                'amount': str(d.amount),
+                'date': d.created_at.date().isoformat(),
+                'payment_method': d.payment_method,
+                'is_anonymous': d.is_anonymous,
+            })
+
+        campaign_data = []
+        for c in campaigns:
+            camp_collected = c.donations.filter(payment_status='confirmed').aggregate(total=Sum('amount'))['total'] or 0
+            goal = float(c.goal_amount) if c.goal_amount else 0
+            progress = int((float(camp_collected) / goal) * 100) if goal else 0
+            campaign_data.append({
+                'id': c.id,
+                'name': c.name,
+                'goal_amount': str(c.goal_amount) if c.goal_amount else None,
+                'collected_amount': str(camp_collected),
+                'progress_pct': progress,
+                'status': c.get_effective_status(),
+                'deadline': c.deadline.isoformat(),
+                'daara_name': c.daara.name if c.daara else None,
+                'organizer_name': c.organizer.get_full_name().strip() if c.organizer else None,
+            })
+
+        return Response({
+            'id': fete.id,
+            'name': fete.name,
+            'date': fete.date.isoformat() if fete.date else None,
+            'description': fete.description,
+            'recurrence': fete.get_recurrence_display(),
+            'is_active': fete.is_active,
+            'total_collected': str(total_collected),
+            'donation_count': donation_count,
+            'campaigns_count': campaigns.count(),
+            'campaigns': campaign_data,
+            'contributions': contributions,
+        })
 
 
 class CampaignViewSet(viewsets.ModelViewSet):

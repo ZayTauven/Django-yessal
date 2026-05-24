@@ -46,7 +46,7 @@ def send_fcm_push(user_id: int, title: str, body: str, data: dict | None = None)
             cred_path = getattr(settings, 'FIREBASE_CREDENTIALS_PATH', None)
             if not cred_path:
                 return
-            cred = credentials.Certificate(cred_path)
+            cred = credentials.Certificate(str(cred_path))
             firebase_admin.initialize_app(cred)
 
         from .models import FCMToken

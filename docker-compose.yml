@@ -25,6 +25,7 @@ services:
       DB_HOST: db
       DB_PORT: 5432
       DJANGO_SETTINGS_MODULE: core.settings
+      FIREBASE_CREDENTIALS_PATH: /run/secrets/firebase/firebase-sa.json
     ports:
       - "8000:8000"
     depends_on:
@@ -33,6 +34,7 @@ services:
     restart: unless-stopped
     volumes:
       - media_data:/app/media
+      - ../AGENTS/firebase/yessal-gui-6d7e0-firebase-adminsdk-fbsvc-35ea30d759.json:/run/secrets/firebase/firebase-sa.json:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health/"]
       interval: 30s

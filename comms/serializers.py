@@ -42,8 +42,10 @@ class UserBriefSerializer(serializers.ModelSerializer):
         return name.strip() if name else (obj.email or obj.phone or f"User {obj.id}")
 
     def get_avatar(self, obj):
+        request = self.context.get('request')
         if obj.avatar:
-            return obj.avatar.url
+            url = obj.avatar.url
+            return request.build_absolute_uri(url) if request else url
         return obj.avatar_url or None
 
 
@@ -124,11 +126,13 @@ class ChatSerializer(serializers.ModelSerializer):
         return obj.name or f"Salon #{obj.id}"
 
     def get_avatar(self, obj):
+        request = self.context.get('request')
         if obj.chat_type == Chat.ChatType.DIRECT:
             other = self._get_other_member(obj)
             if other:
                 if other.avatar:
-                    return other.avatar.url
+                    url = other.avatar.url
+                    return request.build_absolute_uri(url) if request else url
                 return other.avatar_url or None
         return None
 
