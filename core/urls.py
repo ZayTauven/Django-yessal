@@ -30,5 +30,7 @@ urlpatterns = [
     path('health/', lambda request: JsonResponse({'status': 'ok'})),
 ]
 
-if settings.DEBUG:
+# Sert les médias uploadés via Django tant qu'on n'utilise pas de stockage objet (S3).
+# Sur Render, le disque est éphémère : voir le guide de déploiement (stockage non persistant).
+if not settings.USE_S3:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
