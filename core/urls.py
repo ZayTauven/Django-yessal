@@ -16,9 +16,9 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.http import JsonResponse
-from django.urls import path, include
+from django.urls import path, include, re_path
 from django.conf import settings
-from django.conf.urls.static import static
+from django.views.static import serve as serve_media
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -31,6 +31,11 @@ urlpatterns = [
 ]
 
 # Sert les médias uploadés via Django tant qu'on n'utilise pas de stockage objet (S3).
-# Sur Render, le disque est éphémère : voir le guide de déploiement (stockage non persistant).
+# NB : on n'utilise PAS le helper static() car il renvoie [] quand DEBUG=False.
+# La vue serve() fonctionne quel que soit DEBUG. Acceptable pour la démo ;
+# sur Render, le disque reste éphémère (uploads perdus au redéploiement) → S3/R2 pour la persistance.
 if not settings.USE_S3:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+    _media_prefix = settings.MEDIA_URL.lstrip('/')
+    urlpatterns += [
+        re_path(rf'^{_media_prefix}(?P<path>.*)$', serve_media, {'document_root': settings.MEDIA_ROOT}),
+    ]
