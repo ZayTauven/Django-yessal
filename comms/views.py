@@ -34,6 +34,7 @@ from .serializers import (
     UserBriefSerializer,
     UserMessagingPreferencesSerializer,
 )
+from .notify import nom_de, notify, notify_many
 from .services import can_invite, get_effective_config, pusher_client
 
 User = get_user_model()
@@ -277,7 +278,16 @@ class ChatInvitationViewSet(viewsets.ModelViewSet):
         if invitations.exists():
             raise ValidationError("Une invitation est déjà en attente pour ce membre.")
 
-        serializer.save(sender=self.request.user, recipient=recipient)
+        invitation = serializer.save(sender=self.request.user, recipient=recipient)
+
+        salon = getattr(invitation.chat, 'name', '') or 'une discussion'
+        notify(
+            recipient,
+            code='invitation_salon',
+            titre='Invitation à un salon',
+            message=f'{nom_de(self.request.user)} vous invite à rejoindre « {salon} ».',
+            contexte={'auteur': nom_de(self.request.user), 'salon': salon},
+        )
 
     @action(detail=True, methods=['post'], url_path='accept')
     @transaction.atomic
@@ -511,5 +521,46 @@ class AnnouncementViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         if self.request.user.role not in ['admin', 'chef_daara']:
-            raise PermissionDenied('Vous n\'avez pas les droits nécessaires pour publier des annonces.')
-        serializer.save()
+            raise PermissionDenied(
+                "Vous n'avez pas les droits nécessaires pour publier des annonces."
+            )
+        annonce = serializer.save()
+
+        # ═══════════════════════════════════════════════════════════════════
+        # Seules les annonces CRITIQUES partent par courriel
+        # ═══════════════════════════════════════════════════════════════════
+        # Les annonces `info` sont nombreuses et déjà visibles dans le Hub. Les
+        # envoyer toutes est le plus court chemin vers le dossier
+        # « indésirables » — et vers un désabonnement de masse qui emporterait
+        # aussi les messages qui comptent vraiment.
+        if annonce.urgency != Announcement.Urgency.CRITICAL:
+            return
+
+        destinataires = self._destinataires_de(annonce)
+        if destinataires:
+            notify_many(
+                destinataires,
+                code='annonce',
+                titre=annonce.title,
+                message=annonce.content,
+                contexte={
+                    'titre': annonce.title,
+                    'contenu': annonce.content,
+                    'urgence': annonce.get_urgency_display(),
+                },
+            )
+
+    @staticmethod
+    def _destinataires_de(annonce):
+        """Le public d'une annonce, selon sa portée et son rôle cible.
+
+        La même règle que `get_queryset` côté lecture, appliquée à l'endroit :
+        là on filtre les annonces pour un membre, ici on cherche les membres
+        pour une annonce.
+        """
+        qs = User.objects.filter(is_active=True)
+        if annonce.target == Announcement.Target.DAARA_ONLY and annonce.daara_id:
+            qs = qs.filter(daara_id=annonce.daara_id)
+        if annonce.target_role != Announcement.TargetRole.ALL:
+            qs = qs.filter(role=annonce.target_role)
+        return list(qs.only('id', 'email', 'first_name'))

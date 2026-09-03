@@ -13,6 +13,7 @@ from .views import (
     AuditLogViewSet,
     UserManagementViewSet,
     ForgotPasswordView,
+    ResetPasswordConfirmView,
     ChangePasswordView,
     DirectoryUserViewSet,
     PilotageSettingsViewSet,
@@ -60,6 +61,8 @@ urlpatterns = [
     # renouvelée toute seule pendant les 24 h de vie du jeton.
     path('auth/refresh/', VersionedTokenRefreshView.as_view(), name='token_refresh'),
     path('auth/forgot-password/', ForgotPasswordView.as_view(), name='forgot_password'),
+    # Second temps du parcours : le lien reçu par courriel aboutit ici.
+    path('auth/reset-password/', ResetPasswordConfirmView.as_view(), name='reset_password'),
     path('auth/change-password/', ChangePasswordView.as_view(), name='change_password'),
     path('profile/', ProfileView.as_view(), name='profile'),
 

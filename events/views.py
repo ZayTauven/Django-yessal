@@ -8,6 +8,7 @@ from rest_framework.response import Response
 from accounts.models import User
 from accounts.serializers import DirectoryUserSerializer
 from comms.models import Notification
+from comms.notify import notify, notify_many
 from contributions.models import Donation
 
 from .models import Campaign, CampaignTodo, Fete
@@ -64,17 +65,24 @@ class FeteViewSet(viewsets.ModelViewSet):
             return
 
         target_roles = [User.Role.MEMBER, User.Role.COLLECTOR, User.Role.CHEF_DAARA, User.Role.TUTELLE]
-        targets = User.objects.filter(is_active=True, role__in=target_roles).only('id')
+        # `only('id')` ne suffit plus : l'envoi a besoin de l'adresse et du
+        # prénom. Deux colonnes de plus valent mieux qu'une requête par membre.
+        targets = list(
+            User.objects.filter(is_active=True, role__in=target_roles)
+            .only('id', 'email', 'first_name')
+        )
         formatted_date = fete.date.strftime('%d/%m/%Y')
-        notifications = [
-            Notification(
-                user=user,
-                title=f"Prochaine {fete.name}",
-                message=f"Prochaine {fete.name} le {formatted_date}.",
-            )
-            for user in targets
-        ]
-        Notification.objects.bulk_create(notifications, batch_size=500)
+
+        # Seul envoi de masse du produit : il part dans un fil séparé, sur une
+        # seule connexion SMTP. Une boucle d'envois unitaires tiendrait la
+        # requête de l'administrateur plusieurs minutes.
+        notify_many(
+            targets,
+            code='fete_date_modifiee',
+            titre=f"Prochaine {fete.name}",
+            message=f"Prochaine {fete.name} le {formatted_date}.",
+            contexte={'fete': fete.name, 'date': formatted_date},
+        )
 
     @action(detail=True, methods=['get'], url_path='etat')
     def etat(self, request, pk=None):
@@ -172,13 +180,20 @@ class CampaignViewSet(viewsets.ModelViewSet):
     def _notify_organizer(self, campaign):
         if not campaign.organizer:
             return
-        Notification.objects.create(
-            user=campaign.organizer,
-            title='Nouvelle assignation de Campagne',
+        notify(
+            campaign.organizer,
+            code='ndiguel_responsable',
+            titre='Nouvelle assignation de Ndiguel',
             message=(
-                f"Vous avez été désigné(e) comme responsable de la campagne '{campaign.name}'. "
+                f"Vous êtes responsable du Ndiguel « {campaign.name} ». "
                 f"Privilèges actifs jusqu'au {campaign.deadline}."
             ),
+            contexte={
+                'campagne': campaign.name,
+                'campaign': campaign,
+                'objectif': campaign.goal_amount,
+                'echeance': campaign.deadline.strftime('%d/%m/%Y') if campaign.deadline else '',
+            },
         )
 
     @action(detail=True, methods=['get'], url_path='organizer-directory')

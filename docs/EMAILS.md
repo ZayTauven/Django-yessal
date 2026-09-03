@@ -73,11 +73,34 @@ ne pointe nulle part une fois le message ouvert. Les images vivent donc dans
 
 ---
 
-## Légende de la colonne « déclencheur »
+## État : les vingt-six sont branchés
 
-- **● existe** — le point d'accroche est déjà dans le code, il suffit d'y
-  ajouter l'appel `send_to_user`.
-- **○ à créer** — aucun déclencheur n'existe aujourd'hui ; il faut l'écrire.
+Chaque courriel part désormais de son déclencheur réel. Les mentions
+« ● existe » / « ○ à créer » ci-dessous décrivent l'état **avant** ce
+raccordement — elles restent utiles pour retrouver le point d'accroche.
+
+Le câblage passe par `comms.notify.notify()`, qui écrit la notification en base
+**et** envoie le courriel d'un seul geste. Les deux se seraient sinon
+désynchronisés au premier changement de formulation : on aurait lu un message
+dans l'application et un autre dans sa boîte, pour le même événement.
+
+```python
+from comms.notify import notify
+
+notify(
+    membre,
+    code='document_valide',
+    titre='Document validé',              # notification en base
+    message=f'Votre {type_document} a été validé.',
+    contexte={'type_document': type_document},   # variables du gabarit
+)
+```
+
+`notify_many()` pour les envois de masse (annonces critiques, changement de
+date de fête) : un seul `bulk_create`, une seule connexion SMTP, dans un fil
+séparé. `core.mail.send_to_user()` directement quand aucune notification en
+base n'a de sens — l'accusé d'inscription, par exemple, arrive avant que le
+compte soit actif.
 
 ---
 
@@ -365,9 +388,9 @@ appelé depuis `resetMemberPasswordAction`
 
 # D. Jëfs (dons)
 
-## D1 · `jef_enregistre` ○ à créer
+## D1 · `jef_enregistre` ● branché
 
-**Déclencheur** à ajouter dans `DonationViewSet.perform_create`
+**Déclencheur** `DonationViewSet.perform_create` — [`contributions/views.py:89`](../contributions/views.py#L89)
 **Destinataire** le donateur
 **Objet** `Votre Jëf a bien été enregistré`
 
@@ -407,9 +430,9 @@ appelé depuis `resetMemberPasswordAction`
 
 ---
 
-## D3 · `virement_instructions` ○ à créer
+## D3 · `virement_instructions` ● branché
 
-**Déclencheur** à ajouter là où `payment_status` passe à `pending_wire`
+**Déclencheur** `DonationViewSet.pay`, branche virement — [`contributions/views.py`](../contributions/views.py)
 **Destinataire** le donateur
 **Objet** `Comment effectuer votre virement`
 
@@ -529,9 +552,9 @@ appelé depuis `resetMemberPasswordAction`
 
 ---
 
-## E2 · `ndiguel_echeance` ○ à créer
+## E2 · `ndiguel_echeance` ● branché
 
-**Déclencheur** aucun — demande une **tâche planifiée** (voir fin de document)
+**Déclencheur** `manage.py rappel_echeances`, lancé par cron — [`accounts/management/commands/rappel_echeances.py`](../accounts/management/commands/rappel_echeances.py)
 **Destinataire** l'organisateur, ou tous les membres concernés
 **Objet** `Le Ndiguel {campagne} se termine bientôt`
 
@@ -632,13 +655,14 @@ appelé depuis `resetMemberPasswordAction`
 
 Six chantiers, par ordre de dépendance :
 
-**1. `ForgotPasswordView` est une coquille vide** — [`accounts/views.py:892`](../accounts/views.py#L892)
-Elle répond « un email a été envoyé » sans générer de jeton ni envoyer quoi que
-ce soit. Il manque : la génération d'un jeton
-(`django.contrib.auth.tokens.default_token_generator`), l'envoi, un endpoint de
-validation `POST /api/auth/reset-password/`, **et une page `/reset-password`
-côté front, qui n'existe pas**. C'est le seul courriel qui demande du travail
-hors backend.
+**1. ~~`ForgotPasswordView` est une coquille vide~~ — fait.**
+Le parcours est complet : `POST /api/auth/forgot-password/` génère un jeton
+(`default_token_generator`) et envoie le lien ; `POST /api/auth/reset-password/`
+l'échange contre un nouveau mot de passe ; la page `/reset-password` existe côté
+front. Le jeton est à usage unique, la réponse est identique que le compte
+existe ou non, et les deux endpoints ont des quotas de débit distincts —
+demander un lien envoie un courriel (5/h), poser un mot de passe non (20/h),
+parce que Django en refuse souvent plusieurs avant d'en accepter un.
 
 **2. Une préférence de désabonnement.**
 Le pied de page renvoie vers `/dashboard/profile`, mais aucun champ n'y règle
@@ -656,9 +680,14 @@ quelques milliers de destinataires. Celery + Redis, le jour venu.
 un. À volume réel, un administrateur en recevra des dizaines par jour et
 cessera de les lire. Un résumé quotidien vaudra mieux.
 
-**5. Les tâches planifiées.**
-`ndiguel_echeance` n'a aucun déclencheur possible aujourd'hui : il faut une
-commande lancée par `cron`.
+**5. ~~Les tâches planifiées~~ — fait.**
+`python manage.py rappel_echeances` prévient les organisateurs à J-15, J-7 et
+J-2 de l'échéance d'un Ndiguel. `--simuler` affiche ce qui partirait ;
+`--seuils 30,10` change les paliers. À planifier :
+
+```cron
+0 8 * * *  cd /app && python manage.py rappel_echeances
+```
 
 **6. Domaine d'envoi et délivrabilité.**
 Le compte Gmail personnel convient pour les essais. En production, il faudra le

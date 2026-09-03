@@ -1,4 +1,5 @@
-﻿from django.db import transaction
+﻿from django.conf import settings
+from django.db import transaction
 from django.db.models import Count, Sum
 from django.utils import timezone
 
@@ -6,8 +7,25 @@ from rest_framework import filters, permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from comms.notify import administrateurs, nom_de, notify
+from core.mail import send_to_user
+
 from .models import Donation, DonationArchive
 from .serializers import DonationSerializer
+
+
+def montant_lisible(valeur) -> str:
+    """« 150000 » → « 150 000 », avec une espace insécable.
+
+    Une espace ordinaire laisserait un client de messagerie couper la ligne
+    entre « 150 » et « 000 » — un montant coupé en deux se lit de travers, et
+    sur un reçu de paiement c'est le chiffre qui compte.
+    """
+    try:
+        entier = int(round(float(valeur)))
+    except (TypeError, ValueError):
+        return str(valeur)
+    return f'{entier:,}'.replace(',', '\u00a0')
 
 
 class DonationArchiveSerializerMixin:
@@ -69,6 +87,12 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
         return queryset
 
     def perform_create(self, serializer):
+        """Rattache le Jëf, puis en accuse réception à son auteur.
+
+        Le rattachement (collecteur, donateur, Daara bénéficiaire) précède
+        l'envoi : le courriel annonce ce qui est enregistré, il ne doit pas
+        partir avant que ce soit vrai.
+        """
         user = self.request.user
         extra_kwargs = {}
 
@@ -83,7 +107,17 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
         if donor.daara_id:
             extra_kwargs['target_daara_id'] = donor.daara_id
 
-        serializer.save(**extra_kwargs)
+        donation = serializer.save(**extra_kwargs)
+
+        # Aucun message ne partait à la création : le membre validait son Jëf
+        # et n'en gardait aucune trace écrite. Pour un don, c'est le minimum.
+        send_to_user(donation.donor, 'jef_enregistre', {
+            'donation': donation,
+            'montant': montant_lisible(donation.amount),
+            'campagne': donation.campaign.name if donation.campaign else '',
+            'mode_paiement': donation.get_payment_method_display(),
+            'statut': donation.get_payment_status_display(),
+        })
 
     @action(detail=True, methods=['post'])
     def pay(self, request, pk=None):
@@ -100,6 +134,21 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
             donation.payment_status = Donation.PaymentStatus.PENDING_WIRE
             donation.wire_reference = wire_reference
             donation.save(update_fields=['payment_method', 'payment_status', 'wire_reference', 'updated_at'])
+
+            # Les coordonnées bancaires par écrit : c'est le courriel le plus
+            # rouvert du produit — devant un guichet, parfois plusieurs jours
+            # après. Sans lui, le membre doit les redemander.
+            banque = getattr(settings, 'BANK_ACCOUNT', {}) or {}
+            send_to_user(donation.donor, 'virement_instructions', {
+                'donation': donation,
+                'montant': montant_lisible(donation.amount),
+                'campagne': donation.campaign.name if donation.campaign else '',
+                'banque': banque.get('bank_name', ''),
+                'titulaire': banque.get('account_name', ''),
+                'iban': banque.get('iban', ''),
+                'bic': banque.get('bic', ''),
+                'reference': donation.wire_reference,
+            })
             return Response({'status': 'pending_wire', 'detail': 'Virement déclaré, en attente de confirmation admin.'})
 
         if payment_method not in ['orange_money', 'wave', 'visa', 'mastercard', 'bictorys']:
@@ -162,5 +211,18 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
         donation.validated_by = request.user
         donation.validated_at = timezone.now()
         donation.save(update_fields=['payment_status', 'validated_by', 'validated_at', 'updated_at'])
+
+        notify(
+            donation.donor,
+            code='virement_confirme',
+            titre='Virement confirmé',
+            message=f'Votre virement de {montant_lisible(donation.amount)} FCFA a été confirmé.',
+            contexte={
+                'donation': donation,
+                'montant': montant_lisible(donation.amount),
+                'campagne': donation.campaign.name if donation.campaign else '',
+                'date_confirmation': timezone.localtime(donation.validated_at).strftime('%d/%m/%Y'),
+            },
+        )
         return Response(DonationSerializer(donation).data)
 

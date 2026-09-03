@@ -42,15 +42,37 @@ from .services.title_service import approve_title_request, refuse_title_request
 
 from events.models import Campaign
 from contributions.models import Donation
+import logging
+
+from django.conf import settings
+from django.contrib.auth.tokens import default_token_generator
+from django.utils.encoding import force_bytes, force_str
+from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
+
 from comms.models import Notification
+from comms.notify import administrateurs, nom_de, notify
+from core.mail import send_to_user
 
 User = get_user_model()
+
+logger = logging.getLogger(__name__)
 
 
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     permission_classes = (permissions.AllowAny,)
     serializer_class = RegisterSerializer
+
+    def perform_create(self, serializer):
+        membre = serializer.save()
+        # Accusé de réception : l'inscription reste `pending` jusqu'à
+        # validation par un administrateur, et sans ce message le nouvel
+        # inscrit n'a aucun moyen de savoir que sa demande est bien partie.
+        # Pas de notification en base : le compte n'est pas encore actif, il
+        # ne verra la liste qu'après validation.
+        send_to_user(membre, 'inscription_recue', {
+            'daara': membre.daara.name if membre.daara else None,
+        })
 
 
 class CustomTokenObtainPairView(APIView):
@@ -154,6 +176,21 @@ class ChangePasswordView(APIView):
         # connu d'un autre veut d'abord que cet autre soit déconnecté.
         user.token_version += 1
         user.save(update_fields=['password', 'must_change_password', 'token_version'])
+
+        # Courriel de sécurité : il part même quand tout va bien, parce que
+        # c'est précisément le cas où il alerte. Quelqu'un dont le compte a été
+        # pris n'a que ce message pour s'en apercevoir.
+        maintenant = timezone.localtime()
+        notify(
+            user,
+            code='mot_de_passe_modifie',
+            titre='Mot de passe modifié',
+            message='Votre mot de passe a été modifié. Vos autres sessions ont été fermées.',
+            contexte={
+                'date': maintenant.strftime('%d/%m/%Y'),
+                'heure': maintenant.strftime('%Hh%M'),
+            },
+        )
 
         # … mais on ne met pas l'intéressé dehors pour autant : un jeton neuf
         # lui est remis dans la foulée, sur la nouvelle génération. Il reste
@@ -382,6 +419,7 @@ class DirectoryUserViewSet(viewsets.ReadOnlyModelViewSet):
         if request.user.role == User.Role.ADMIN:
             target.role = User.Role.COLLECTOR
             target.save(update_fields=['role'])
+            self._notifier_promotion(target, request.user)
             return Response(DirectoryUserSerializer(target, context={'request': request}).data, status=status.HTTP_200_OK)
 
         if request.user.role != User.Role.CHEF_DAARA:
@@ -396,7 +434,26 @@ class DirectoryUserViewSet(viewsets.ReadOnlyModelViewSet):
 
         target.role = User.Role.COLLECTOR
         target.save(update_fields=['role'])
+        self._notifier_promotion(target, request.user)
         return Response(DirectoryUserSerializer(target, context={'request': request}).data, status=status.HTTP_200_OK)
+
+    @staticmethod
+    def _notifier_promotion(promu, auteur):
+        """La promotion se fait par deux chemins — admin, chef de Daara.
+
+        Extrait en méthode pour que les deux disent la même chose : recopié,
+        le message aurait divergé au premier ajustement.
+        """
+        notify(
+            promu,
+            code='promotion_collecteur',
+            titre='Vous êtes désormais collecteur',
+            message='Vous pouvez enregistrer les Jëfs remis en espèces.',
+            contexte={
+                'auteur': nom_de(auteur),
+                'daara': promu.daara.name if promu.daara else None,
+            },
+        )
 
 
 class MemberTitleViewSet(viewsets.ModelViewSet):
@@ -445,7 +502,21 @@ class TitleRequestViewSet(viewsets.ModelViewSet):
         if pending_exists:
             raise serializers.ValidationError({'detail': 'Une demande de titre est déjà en attente.'})
 
-        serializer.save(member=member)
+        demande = serializer.save(member=member)
+
+        nom_membre = nom_de(member)
+        for admin in administrateurs():
+            notify(
+                admin,
+                code='titre_a_examiner',
+                titre='Nouvelle demande de titre',
+                message=f'{nom_membre} demande le titre de {demande.title.name}.',
+                contexte={
+                    'membre': nom_membre,
+                    'daara': member.daara.name if member.daara else None,
+                    'titre': demande.title.name,
+                },
+            )
 
     @action(detail=True, methods=['patch'], url_path='review', permission_classes=[permissions.IsAdminUser])
     def review(self, request, pk=None):
@@ -494,15 +565,26 @@ class UserDocumentViewSet(viewsets.ModelViewSet):
             self._notify_admins_document_submission(doc)
 
     def _notify_admins_document_submission(self, doc: UserDocument):
-        admin_users = User.objects.filter(role=User.Role.ADMIN, is_active=True)
-        member_name = doc.user.get_full_name().strip() or doc.user.email or doc.user.phone
-        doc_type = doc.get_doc_type_display()
-        for admin in admin_users:
-            Notification.objects.create(
-                user=admin,
-                title='Nouveau document soumis',
-                message=f"{member_name} a soumis le document: {doc_type}.",
+        """Prévient les administrateurs, et accuse réception au déposant."""
+        membre = nom_de(doc.user)
+        type_document = doc.get_doc_type_display()
+        daara = doc.user.daara.name if doc.user.daara else None
+
+        for admin in administrateurs():
+            notify(
+                admin,
+                code='document_a_valider',
+                titre='Nouveau document soumis',
+                message=f"{membre} a soumis le document : {type_document}.",
+                contexte={'membre': membre, 'daara': daara,
+                          'type_document': type_document, 'document': doc},
             )
+
+        # Accusé au déposant : sans lui, il ne sait pas si son envoi est passé,
+        # et redépose — d'où des doublons à trier côté administration.
+        send_to_user(doc.user, 'document_recu', {
+            'type_document': type_document, 'document': doc,
+        })
 
 
 class PendingDocumentValidationViewSet(viewsets.ReadOnlyModelViewSet):
@@ -527,6 +609,28 @@ class DocumentValidationView(APIView):
         doc.validated_by = request.user
         doc.validated_at = timezone.now()
         doc.save(update_fields=['status', 'rejection_note', 'validated_by', 'validated_at'])
+
+        type_document = doc.get_doc_type_display()
+        if doc.status == UserDocument.ValidationStatus.VALIDATED:
+            notify(
+                doc.user,
+                code='document_valide',
+                titre='Document validé',
+                message=f'Votre {type_document} a été validé.',
+                contexte={'type_document': type_document, 'document': doc},
+            )
+        elif doc.status == UserDocument.ValidationStatus.REJECTED:
+            # Le motif est indispensable : sans lui, le membre redépose la
+            # même photo et le cycle recommence.
+            notify(
+                doc.user,
+                code='document_a_corriger',
+                titre='Document à corriger',
+                message=doc.rejection_note or f'Votre {type_document} doit être corrigé.',
+                contexte={'type_document': type_document, 'document': doc,
+                          'motif': doc.rejection_note},
+            )
+
         return Response(UserDocumentSerializer(doc).data)
 
 
@@ -547,6 +651,14 @@ class MemberAssignTitleView(APIView):
         user.title_change_count = user.title_change_count + 1
         user.title_changed_at = timezone.now()
         user.save(update_fields=['title', 'title_change_count', 'title_changed_at'])
+
+        notify(
+            user,
+            code='titre_attribue',
+            titre='Un titre vous a été attribué',
+            message=f'Vous portez désormais le titre de {title.name}.',
+            contexte={'titre': title.name, 'auteur': nom_de(request.user)},
+        )
         return Response(UserSerializer(user, context={'request': request}).data)
 
 
@@ -870,6 +982,14 @@ class UserManagementViewSet(viewsets.ModelViewSet):
         user = self.get_object()
         user.status = User.Status.ACTIVE
         user.save(update_fields=['status'])
+
+        notify(
+            user,
+            code='compte_valide',
+            titre='Votre compte est actif',
+            message='Votre compte a été validé. Vous pouvez vous connecter.',
+            contexte={'daara': user.daara.name if user.daara else None},
+        )
         return Response({'status': 'user validated'})
 
     @action(detail=True, methods=['post'])
@@ -877,6 +997,20 @@ class UserManagementViewSet(viewsets.ModelViewSet):
         user = self.get_object()
         user.status = User.Status.BLOCKED
         user.save(update_fields=['status'])
+
+        # Le blocage est le plus souvent administratif — doublon, compte de
+        # test — rarement une sanction. Le message ne doit pas accuser.
+        notify(
+            user,
+            code='compte_bloque',
+            titre='Accès suspendu',
+            message=(
+                "L'accès à votre compte a été suspendu. Vos Jëfs enregistrés "
+                'restent comptabilisés.'
+            ),
+            contexte={'daara': user.daara.name if user.daara else None,
+                      'motif': ''},
+        )
         return Response({'status': 'user blocked'})
 
     @action(detail=True, methods=['get'], url_path='tutelle')
@@ -890,14 +1024,117 @@ class UserManagementViewSet(viewsets.ModelViewSet):
 
 
 class ForgotPasswordView(generics.GenericAPIView):
+    """Demande de réinitialisation : envoie un lien à usage unique.
+
+    ═══════════════════════════════════════════════════════════════════════
+    La réponse est la MÊME que le compte existe ou non
+    ═══════════════════════════════════════════════════════════════════════
+    Répondre « aucun compte avec cette adresse » transformerait cet endpoint
+    public en oracle : on y teste des adresses jusqu'à savoir lesquelles sont
+    inscrites. Sur une plateforme d'appartenance religieuse, cette information
+    n'est pas anodine. Le message et le code de retour sont donc invariants,
+    et seul l'envoi diffère.
+
+    Le jeton vient de `default_token_generator` : dérivé du mot de passe et de
+    `last_login`, il devient caduc dès qu'on s'en sert, sans rien à stocker.
+    """
+
     permission_classes = (permissions.AllowAny,)
+    throttle_scope = 'mot_de_passe_demande'
+
+    REPONSE = {'detail': 'Un email de récupération a été envoyé si le compte existe.'}
 
     def post(self, request):
-        email = request.data.get('email')
+        email = (request.data.get('email') or '').strip()
         if not email:
             return Response({'detail': 'Email requis.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response({'detail': 'Un email de récupération a été envoyé si le compte existe.'})
+        user = User.objects.filter(email__iexact=email, is_active=True).first()
+        if user:
+            jeton = default_token_generator.make_token(user)
+            identifiant = urlsafe_base64_encode(force_bytes(user.pk))
+            lien = f"{settings.BASE_URL}/reset-password?uid={identifiant}&token={jeton}"
+
+            heures = max(1, settings.PASSWORD_RESET_TIMEOUT // 3600)
+            send_to_user(user, 'mot_de_passe_oublie', {
+                'lien_reinitialisation': lien,
+                'duree_validite': f"{heures} heures" if heures > 1 else "1 heure",
+            })
+        else:
+            # Journalisé, jamais renvoyé : utile pour distinguer « personne
+            # n'a demandé » de « la demande n'aboutit pas ».
+            logger.info("Réinitialisation demandée pour une adresse inconnue.")
+
+        return Response(self.REPONSE)
+
+
+class ResetPasswordConfirmView(generics.GenericAPIView):
+    """Pose le nouveau mot de passe, contre un jeton valide.
+
+    Second temps du parcours : le premier envoie le lien, celui-ci l'échange.
+    Sans lui, le courriel menait à une page qui n'avait rien à appeler.
+    """
+
+    permission_classes = (permissions.AllowAny,)
+    throttle_scope = 'mot_de_passe_reset'
+
+    def post(self, request):
+        identifiant = request.data.get('uid') or ''
+        jeton = request.data.get('token') or ''
+        nouveau = request.data.get('new_password') or ''
+
+        if not identifiant or not jeton or not nouveau:
+            return Response(
+                {'detail': 'Lien incomplet. Refaites une demande depuis la page de connexion.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            pk = force_str(urlsafe_base64_decode(identifiant))
+            user = User.objects.get(pk=pk, is_active=True)
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            # Message volontairement identique à celui du jeton invalide : un
+            # identifiant mal formé ne doit pas se distinguer d'un jeton périmé.
+            return Response(
+                {'detail': 'Ce lien n\'est plus valable. Refaites une demande.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not default_token_generator.check_token(user, jeton):
+            return Response(
+                {'detail': 'Ce lien n\'est plus valable. Refaites une demande.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            validate_password(nouveau, user=user)
+        except DjangoValidationError as exc:
+            return Response({'detail': ' '.join(exc.messages)},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        user.set_password(nouveau)
+        # Le drapeau s'éteint : le mot de passe est désormais choisi par
+        # l'intéressé, plus imposé par un tiers.
+        user.must_change_password = False
+        # Toutes les sessions tombent. On réinitialise souvent parce qu'on
+        # soupçonne un accès non désiré : le laisser ouvert viderait la
+        # démarche de son sens.
+        user.token_version += 1
+        user.save(update_fields=['password', 'must_change_password', 'token_version'])
+
+        maintenant = timezone.localtime()
+        notify(
+            user,
+            code='mot_de_passe_modifie',
+            titre='Mot de passe modifié',
+            message='Votre mot de passe a été réinitialisé. Vos sessions ont été fermées.',
+            contexte={
+                'date': maintenant.strftime('%d/%m/%Y'),
+                'heure': maintenant.strftime('%Hh%M'),
+            },
+        )
+
+        return Response({'detail': 'Mot de passe réinitialisé. Vous pouvez vous connecter.'})
 
 
 class PilotageSettingsViewSet(viewsets.ViewSet):

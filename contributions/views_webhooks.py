@@ -5,6 +5,8 @@ from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseForbid
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from django.conf import settings
+from comms.notify import notify
+
 from .models import Donation
 
 logger = logging.getLogger(__name__)
@@ -99,6 +101,26 @@ def bictorys_webhook(request):
                 donation.campaign.update_collected_amount()
             
             logger.info(f"Donation {donation.id} confirmed via Bictorys webhook")
+
+            # Ce message fait office de REÇU : montant, moyen et référence
+            # doivent y figurer, c'est ce qu'on rouvre six mois plus tard.
+            from .views import montant_lisible
+            notify(
+                donation.donor,
+                code='paiement_confirme',
+                titre='Paiement confirmé',
+                message=(
+                    f'Votre paiement de {montant_lisible(donation.amount)} FCFA '
+                    f'a été confirmé.'
+                ),
+                contexte={
+                    'donation': donation,
+                    'montant': montant_lisible(donation.amount),
+                    'campagne': donation.campaign.name if donation.campaign else '',
+                    'mode_paiement': donation.get_payment_method_display(),
+                    'reference': donation.external_ref or bictorys_id,
+                },
+            )
         else:
             logger.warning(f"Amount mismatch for donation {donation.id}: expected {donation.amount}, received {amount_received}")
             donation.payment_status = Donation.PaymentStatus.FAILED
@@ -108,5 +130,23 @@ def bictorys_webhook(request):
         donation.payment_status = Donation.PaymentStatus.FAILED
         donation.save(update_fields=["payment_status"])
         logger.info(f"Donation {donation.id} marked as FAILED via Bictorys webhook")
+
+        # « Aucune somme n'a été prélevée » est la phrase que le membre
+        # cherche : elle passe avant tout le reste dans le gabarit.
+        from .views import montant_lisible
+        notify(
+            donation.donor,
+            code='paiement_echoue',
+            titre="Paiement non abouti",
+            message=(
+                f'Votre paiement de {montant_lisible(donation.amount)} FCFA '
+                f"n'a pas abouti. Aucune somme n'a été prélevée."
+            ),
+            contexte={
+                'donation': donation,
+                'montant': montant_lisible(donation.amount),
+                'campagne': donation.campaign.name if donation.campaign else '',
+            },
+        )
 
     return HttpResponse(status=200)

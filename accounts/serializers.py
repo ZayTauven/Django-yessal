@@ -16,6 +16,8 @@ from .models import (
 )
 from .authentication import TOKEN_VERSION_CLAIM
 
+from core.mail import send_to_user
+
 User = get_user_model()
 
 def _absolute_or_raw_url(request, url: str | None):
@@ -26,6 +28,21 @@ def _absolute_or_raw_url(request, url: str | None):
     if request:
         return request.build_absolute_uri(url)
     return url
+
+
+def _auteur_de(serializer) -> str:
+    """Qui a posé ce mot de passe — pour que le membre sache qui appeler.
+
+    Le sérialiseur n'a pas toujours accès à la requête (import Excel, commande
+    de gestion). On retombe alors sur une formule neutre plutôt que d'omettre
+    la phrase, qui perdrait son sens.
+    """
+    requete = serializer.context.get('request')
+    auteur = getattr(requete, 'user', None)
+    if auteur is None or not getattr(auteur, 'is_authenticated', False):
+        return "Un administrateur"
+    nom = (auteur.get_full_name() or '').strip()
+    return nom or auteur.email or "Un administrateur"
 
 
 class PilotageSettingsSerializer(serializers.ModelSerializer):
@@ -310,6 +327,14 @@ class UserSerializer(serializers.ModelSerializer):
             # lève pas ce drapeau.
             user.must_change_password = True
             user.save()
+
+            # Le mot de passe lui-même n'est JAMAIS dans le courriel : il est
+            # dicté de vive voix. L'écrire le rendrait indéfiniment lisible par
+            # quiconque accède à la boîte. Le message dit seulement qu'un mot de
+            # passe provisoire a été posé, et qu'il faudra en choisir un autre.
+            send_to_user(user, 'mot_de_passe_provisoire', {
+                'auteur': _auteur_de(self),
+            })
         return user
 
     def update(self, instance, validated_data):
@@ -327,6 +352,14 @@ class UserSerializer(serializers.ModelSerializer):
             # s'y maintenir en le rafraîchissant.
             user.token_version += 1
             user.save()
+
+            # Le mot de passe lui-même n'est JAMAIS dans le courriel : il est
+            # dicté de vive voix. L'écrire le rendrait indéfiniment lisible par
+            # quiconque accède à la boîte. Le message dit seulement qu'un mot de
+            # passe provisoire a été posé, et qu'il faudra en choisir un autre.
+            send_to_user(user, 'mot_de_passe_provisoire', {
+                'auteur': _auteur_de(self),
+            })
         return user
 
 

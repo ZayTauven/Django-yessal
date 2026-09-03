@@ -283,10 +283,24 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_CLASSES': (
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle',
+        'rest_framework.throttling.ScopedRateThrottle',
     ),
     'DEFAULT_THROTTLE_RATES': {
         'anon': config('THROTTLE_ANON', default='60/min'),
         'user': config('THROTTLE_USER', default='1000/hour'),
+        # ═══════════════════════════════════════════════════════════════════
+        # Deux quotas, parce que les deux endpoints ne coûtent pas la même chose
+        # ═══════════════════════════════════════════════════════════════════
+        # DEMANDER un lien envoie un courriel : c'est le geste qu'il faut
+        # freiner, sous peine de transformer l'endpoint en machine à harceler
+        # une boîte de réception. Cinq par heure suffisent largement.
+        'mot_de_passe_demande': config('THROTTLE_PASSWORD_REQUEST', default='5/hour'),
+        # POSER le nouveau mot de passe n'envoie rien tant qu'il est refusé —
+        # et il l'est souvent : trop court, trop courant, trop proche du nom.
+        # Un quota aussi serré punirait quelqu'un qui cherche simplement un
+        # mot de passe acceptable. Les deux quotas partagés à 5/h ont d'ailleurs
+        # fait échouer le test du parcours, ce qui a révélé le problème.
+        'mot_de_passe_reset': config('THROTTLE_PASSWORD_RESET', default='20/hour'),
     },
 }
 

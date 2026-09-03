@@ -3,7 +3,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from accounts.models import TitleRequest, User
-from comms.models import Notification
+from comms.notify import notify
 
 
 @transaction.atomic
@@ -25,10 +25,12 @@ def approve_title_request(request_obj: TitleRequest, admin: User, note: str = ""
     request_obj.note = note or ""
     request_obj.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'note'])
 
-    Notification.objects.create(
-        user=member,
-        title="Demande de titre approuvée",
-        message=f"Votre demande a été approuvée. Nouveau titre: {request_obj.title.name}.",
+    notify(
+        member,
+        code='titre_approuve',
+        titre="Demande de titre approuvée",
+        message=f"Votre demande a été approuvée. Nouveau titre : {request_obj.title.name}.",
+        contexte={'titre': request_obj.title.name, 'note': note or ''},
     )
     return request_obj
 
@@ -41,10 +43,14 @@ def refuse_title_request(request_obj: TitleRequest, admin: User, note: str = "")
     request_obj.note = note or ""
     request_obj.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'note'])
 
-    Notification.objects.create(
-        user=request_obj.member,
-        title="Demande de titre refusée",
-        message="Votre demande de titre a été refusée. Consultez la note de l'administrateur.",
+    # Le refus ne consomme PAS l'unique changement de titre : le membre peut
+    # redemander. Il n'a aucun moyen de le savoir si on ne le lui dit pas.
+    notify(
+        request_obj.member,
+        code='titre_refuse',
+        titre="Demande de titre refusée",
+        message="Votre demande n'a pas été retenue. Vous pouvez en faire une nouvelle.",
+        contexte={'titre': request_obj.title.name, 'note': note or ''},
     )
     return request_obj
 
