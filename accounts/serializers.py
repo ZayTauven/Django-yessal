@@ -14,6 +14,7 @@ from .models import (
     TitleRequest,
     UserDocument,
 )
+from .authentication import TOKEN_VERSION_CLAIM
 
 User = get_user_model()
 
@@ -39,12 +40,47 @@ class LDDSerializer(serializers.ModelSerializer):
         fields = ['id', 'code', 'name', 'description', 'location', 'is_active']
 
 
-class DirectoryDaaraBriefSerializer(serializers.ModelSerializer):
-    ldd_code = serializers.CharField(source='ldd.code', read_only=True)
+class LDDBriefSerializer(serializers.ModelSerializer):
+    """Zone territoriale réduite à ce qui sert à grouper la liste."""
+
+    class Meta:
+        model = LDD
+        fields = ['id', 'code', 'name']
+
+
+class PublicDaaraSerializer(serializers.ModelSerializer):
+    """
+    Vue publique d'un Daara — celle que sert le formulaire d'inscription.
+
+    L'inscription doit rester ouverte : un nouveau membre choisit son Daara
+    avant d'avoir un compte, donc `/api/daara/` répond sans authentification.
+    Mais elle répondait avec le sérialiseur complet, c'est-à-dire le nom du
+    chef, la liste nominative des collecteurs et l'effectif de chaque Daara —
+    un annuaire interne de 376 entrées, aspirable par un simple curl.
+
+    Ne restent ici que les trois champs dont la liste déroulante a besoin :
+    de quoi choisir son Daara, rien de plus.
+    """
+
+    ldd = LDDBriefSerializer(read_only=True)
 
     class Meta:
         model = Daara
-        fields = ['id', 'name', 'ldd_code']
+        fields = ['id', 'name', 'ldd']
+
+
+class DirectoryDaaraBriefSerializer(serializers.ModelSerializer):
+    ldd_code = serializers.CharField(source='ldd.code', read_only=True)
+    # Le NOM de la zone en plus du code : « CASAMANCE MIDADI » se lit,
+    # « DS S15 » se déchiffre. L'annuaire n'exposait que le code, si bien que
+    # la ligne « LDD » des fiches membres n'avait rien à afficher et se
+    # rabattait sur « Inconnue » — y compris pour des Daaras parfaitement
+    # rattachés.
+    ldd_name = serializers.CharField(source='ldd.name', read_only=True)
+
+    class Meta:
+        model = Daara
+        fields = ['id', 'name', 'ldd_code', 'ldd_name']
 
 
 class MemberTitleSerializer(serializers.ModelSerializer):
@@ -238,7 +274,11 @@ class UserSerializer(serializers.ModelSerializer):
             'city', 'address', 'state', 'zip_code',
             'marital_status', 'blood_type',
             'date_joined',
+            'must_change_password',
         ]
+        # En lecture seule : c'est le changement de mot de passe qui l'éteint,
+        # pas une mise à jour de profil.
+        read_only_fields = ['must_change_password']
 
     def get_is_admin(self, obj):
         return obj.role == User.Role.ADMIN or obj.is_staff
@@ -263,6 +303,12 @@ class UserSerializer(serializers.ModelSerializer):
         user = super().create(validated_data)
         if password:
             user.set_password(password)
+            # Ce sérialiseur est celui de l'ADMINISTRATION : création manuelle,
+            # inscription rapide du collecteur, import Excel. Dans les trois
+            # cas, le mot de passe est choisi par un tiers et connu de lui.
+            # L'auto-inscription publique passe par RegisterSerializer, qui ne
+            # lève pas ce drapeau.
+            user.must_change_password = True
             user.save()
         return user
 
@@ -271,6 +317,15 @@ class UserSerializer(serializers.ModelSerializer):
         user = super().update(instance, validated_data)
         if password:
             user.set_password(password)
+            # Un administrateur qui réinitialise le mot de passe de quelqu'un
+            # le lui impose tout autant : le drapeau reste levé.
+            user.must_change_password = True
+            # Et surtout, toutes ses sessions ouvertes tombent. C'est le sens
+            # même de la demande : on réinitialise parce qu'on soupçonne
+            # quelqu'un d'autre d'utiliser le compte. Sans cela, l'intrus
+            # gardait la main pendant l'heure de validité du jeton, et pouvait
+            # s'y maintenir en le rafraîchissant.
+            user.token_version += 1
             user.save()
         return user
 
@@ -331,6 +386,11 @@ class CustomRefreshToken(RefreshToken):
     @classmethod
     def for_user(cls, user):
         token = super().for_user(user)
+        # Génération du jeton — voir accounts/authentication.py. Sans ce claim,
+        # rien ne permet de distinguer un jeton émis avant une réinitialisation
+        # de mot de passe d'un jeton émis après, et une session compromise
+        # survivait à sa propre révocation.
+        token[TOKEN_VERSION_CLAIM] = user.token_version
         token['role'] = user.role
         token['first_name'] = user.first_name
         token['last_name'] = user.last_name

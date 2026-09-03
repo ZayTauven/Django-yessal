@@ -1,5 +1,7 @@
 ﻿from django.db.models import Sum, Count
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
 
 from rest_framework import generics, permissions, status, viewsets, filters, serializers
@@ -18,12 +20,14 @@ from .models import (
     UserDocument,
 )
 from .serializers import (
+    CustomRefreshToken,
     RegisterSerializer,
     LoginSerializer,
     UserSerializer,
     ProfileUpdateSerializer,
     LDDSerializer,
     DaaraSerializer,
+    PublicDaaraSerializer,
     TutelleSerializer,
     AuditLogSerializer,
     DirectoryUserSerializer,
@@ -95,6 +99,74 @@ class ProfileView(generics.RetrieveUpdateAPIView):
         return Response(UserSerializer(instance, context=self.get_serializer_context()).data)
 
 
+class ChangePasswordView(APIView):
+    """Changement de mot de passe par l'intéressé lui-même.
+
+    Il n'existait aucun moyen pour un membre de changer son mot de passe :
+    `ProfileUpdateSerializer` ne porte pas le champ, et seul le parcours « mot
+    de passe oublié » — qui suppose une adresse e-mail valide — permettait d'en
+    obtenir un nouveau. Or les comptes créés par un tiers reçoivent un mot de
+    passe attribué, parfois commun à toute une promotion dans le cas de l'import
+    Excel : leur demander de le remplacer supposait d'abord qu'ils le puissent.
+
+    L'ancien mot de passe est exigé. Sans lui, un jeton volé suffirait à
+    verrouiller un compte de façon définitive.
+    """
+
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def post(self, request):
+        current = request.data.get('current_password') or ''
+        new = request.data.get('new_password') or ''
+
+        if not current or not new:
+            return Response(
+                {'error': 'Mot de passe actuel et nouveau mot de passe requis.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = request.user
+
+        if not user.check_password(current):
+            return Response(
+                {'error': 'Mot de passe actuel incorrect.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if new == current:
+            return Response(
+                {'error': 'Le nouveau mot de passe doit être différent de l\'ancien.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Les règles de robustesse de Django, et non les nôtres : longueur
+        # minimale, mots de passe trop courants, similarité avec le nom ou
+        # l'adresse. Les messages remontent déjà traduits.
+        try:
+            validate_password(new, user=user)
+        except DjangoValidationError as exc:
+            return Response({'error': ' '.join(exc.messages)}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.set_password(new)
+        user.must_change_password = False
+        # Toutes les sessions ouvertes tombent, y compris celle d'où part la
+        # demande : quelqu'un qui change son mot de passe parce qu'il le croit
+        # connu d'un autre veut d'abord que cet autre soit déconnecté.
+        user.token_version += 1
+        user.save(update_fields=['password', 'must_change_password', 'token_version'])
+
+        # … mais on ne met pas l'intéressé dehors pour autant : un jeton neuf
+        # lui est remis dans la foulée, sur la nouvelle génération. Il reste
+        # connecté ici, et nulle part ailleurs.
+        refresh = CustomRefreshToken.for_user(user)
+
+        return Response({
+            'detail': 'Mot de passe modifié.',
+            'access': str(refresh.access_token),
+            'refresh': str(refresh),
+        })
+
+
 class LDDViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = LDDSerializer
     queryset = LDD.objects.filter(is_active=True).order_by('code')
@@ -104,6 +176,20 @@ class LDDViewSet(viewsets.ReadOnlyModelViewSet):
 class DaaraViewSet(viewsets.ModelViewSet):
     serializer_class = DaaraSerializer
     queryset = Daara.objects.all()
+
+    def get_serializer_class(self):
+        """
+        Un visiteur non authentifié reçoit la version réduite.
+
+        La liste des Daaras doit rester lisible sans compte — le formulaire
+        d'inscription s'en sert pour son menu déroulant. Elle répondait
+        toutefois avec le sérialiseur complet : nom du chef, collecteurs
+        nominatifs, effectifs. Ces champs ne servent qu'aux écrans internes,
+        et n'ont donc rien à faire dans une réponse anonyme.
+        """
+        if self.action in {'list', 'retrieve'} and not self.request.user.is_authenticated:
+            return PublicDaaraSerializer
+        return super().get_serializer_class()
 
     def get_permissions(self):
         if self.action in {'list', 'retrieve'}:
@@ -597,12 +683,22 @@ class AnalyticsViewSet(viewsets.ViewSet):
             'bictorys': 'Bictorys', 'visa': 'Visa', 'mastercard': 'Mastercard',
             'collector': 'Collecteur',
         }
+        # `amount` en plus de `dons` : sur un tableau de bord de collecte, la
+        # question « par quel canal l'argent arrive-t-il » compte plus que le
+        # nombre de transactions. Le front ventilait les COMPTES sous le
+        # libellé « Collecté », ce qui donnait un anneau au centre duquel on
+        # lisait « Collecté 43 » — quarante-trois francs, comprenait-on.
+        # Les deux sont renvoyés : le montant pour la ventilation, le compte
+        # pour le détail au survol.
         pie_chart = []
-        for entry in all_donations.values('payment_method').annotate(dons=Count('id')):
+        for entry in all_donations.values('payment_method').annotate(
+            dons=Count('id'), amount=Sum('amount')
+        ):
             method = entry['payment_method']
             pie_chart.append({
                 'method': method_labels.get(method, method.replace('_', ' ').title()),
                 'dons': entry['dons'],
+                'amount': int(entry['amount'] or 0),
                 'fill': f"var(--chart-{len(pie_chart) + 1})",
             })
 
@@ -717,9 +813,23 @@ class AnalyticsViewSet(viewsets.ViewSet):
             collected = Donation.objects.filter(campaign=c, payment_status='confirmed').aggregate(Sum('amount'))['amount__sum'] or 0
             tasks_total = c.todos.count()
             tasks_completed = c.todos.filter(is_completed=True).count()
+            # Trois compteurs, UNE seule convention.
+            #
+            # `days_total` comptait le jour d'ouverture (+1) quand
+            # `days_remaining` ne comptait pas celui de l'échéance : sur un
+            # Ndiguel ouvert le jour même, l'écran affichait « 0 / 41 jours,
+            # reste 40 ». Zéro plus quarante ne fait pas quarante et un, et un
+            # responsable qui lit « jour 0 » se demande si sa mission a démarré.
+            #
+            # Désormais : le premier jour est le jour 1, l'échéance est comprise
+            # dans le décompte restant, et `écoulés + restants == total`.
+            today = timezone.now().date()
             anchor_date = c.organizer_assigned_at.date() if c.organizer_assigned_at else c.created_at.date()
-            days_active = (timezone.now().date() - anchor_date).days
             days_total = max(1, (c.deadline - anchor_date).days + 1)
+            days_remaining = max(0, (c.deadline - today).days)
+            # Borné par le total : une échéance dépassée ne doit pas afficher
+            # « jour 58 sur 41 ».
+            days_active = min(days_total, max(1, (today - anchor_date).days + 1))
 
             data.append(
                 {
@@ -732,9 +842,9 @@ class AnalyticsViewSet(viewsets.ViewSet):
                     'objective': c.objective,
                     'tasks_total': tasks_total,
                     'tasks_completed': tasks_completed,
-                    'days_active': max(0, days_active),
+                    'days_active': days_active,
                     'days_total': days_total,
-                    'days_remaining': max(0, (c.deadline - timezone.now().date()).days),
+                    'days_remaining': days_remaining,
                     'chat_count': c.chats.count(),
                     'status': c.get_effective_status(),
                 }

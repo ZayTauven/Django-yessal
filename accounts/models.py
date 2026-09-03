@@ -2,6 +2,7 @@
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
+from core.validators import downscale_image, validate_upload_size
 
 
 class CustomUserManager(BaseUserManager):
@@ -130,7 +131,7 @@ class User(AbstractUser):
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.MEMBER)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     daara = models.ForeignKey(Daara, on_delete=models.SET_NULL, null=True, blank=True, related_name='members')
-    avatar = models.ImageField(upload_to='avatars/', blank=True, null=True)
+    avatar = models.ImageField(upload_to='avatars/', blank=True, null=True, validators=[validate_upload_size])
     avatar_url = models.URLField(blank=True, null=True)
 
     title = models.ForeignKey(MemberTitle, on_delete=models.SET_NULL, null=True, blank=True, related_name='members')
@@ -147,6 +148,37 @@ class User(AbstractUser):
     blood_type = models.CharField(max_length=10, choices=BloodType.choices, blank=True, null=True)
 
     last_active_at = models.DateTimeField(blank=True, null=True)
+
+    # Vrai quand le mot de passe a été attribué par QUELQU'UN D'AUTRE : compte
+    # créé par un administrateur, inscription rapide d'un collecteur, ou import
+    # Excel — ce dernier posant la même chaîne sur toute la promotion.
+    #
+    # Le membre n'a alors pas choisi son mot de passe, et d'autres personnes le
+    # connaissent. L'interface le lui signale à chaque écran tant qu'il ne l'a
+    # pas remplacé ; `POST /api/auth/change-password/` remet ce drapeau à faux.
+    #
+    # Reste à faux pour une inscription publique (RegisterSerializer) : là, le
+    # membre a choisi son mot de passe lui-même.
+    must_change_password = models.BooleanField(default=False)
+
+    # Numéro de génération des jetons de cette personne. Chaque JWT émis porte
+    # la valeur qui avait cours à sa création ; l'authentification refuse tout
+    # jeton dont le numéro ne correspond plus.
+    #
+    # Un JWT est valide par lui-même : le serveur ne garde aucune trace des
+    # sessions ouvertes, et un jeton volé reste utilisable jusqu'à son
+    # expiration — une heure ici. Changer le mot de passe ne changeait donc
+    # RIEN pour qui était déjà connecté : c'est précisément le cas où l'on
+    # réinitialise, quand on soupçonne quelqu'un d'autre d'utiliser le compte.
+    #
+    # Incrémenter ce compteur invalide d'un coup toutes les sessions ouvertes,
+    # sans table de révocation ni requête supplémentaire.
+    token_version = models.PositiveIntegerField(default=0)
+
+    def revoke_sessions(self):
+        """Invalide immédiatement tous les jetons déjà émis pour ce compte."""
+        self.token_version += 1
+        self.save(update_fields=['token_version'])
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['first_name', 'last_name']
@@ -174,6 +206,34 @@ class User(AbstractUser):
     def save(self, *args, **kwargs):
         self.email = (self.email or '').strip() or None
         self.phone = (self.phone or '').strip() or None
+
+        # Réduction à la source : le plafond de 15 Mo dit ce qu'on accepte,
+        # pas ce qu'on doit réservir à chaque visiteur. Voir
+        # core.validators.downscale_image — sans effet si l'image tient déjà
+        # dans les bornes, et silencieuse en cas d'échec.
+        downscale_image(self.avatar)
+
+        # ═══════════════════════════════════════════════════════════════════
+        # `role` et `is_staff` doivent dire la même chose
+        # ═══════════════════════════════════════════════════════════════════
+        # Le produit raisonne en rôles (`role == 'admin'`), DRF raisonne en
+        # `is_staff` : `permissions.IsAdminUser` ne regarde QUE ce drapeau.
+        # Les deux administrateurs actuels viennent de `createsuperuser`, qui
+        # pose is_staff=True — le désaccord ne se voyait donc pas.
+        #
+        # Il se serait vu au premier administrateur nommé depuis l'interface
+        # (« Utilisateurs et rôles ») : role='admin', is_staff=False. Le front
+        # l'aurait laissé entrer dans /dashboard/admin/* — il ouvre sur le
+        # rôle — et chaque appel serait revenu en 403, donc en écran vide ou
+        # en page « introuvable ». Un administrateur sans aucun pouvoir.
+        #
+        # `update_fields` doit apprendre le champ, sinon l'écriture l'ignore.
+        if self.role == self.Role.ADMIN and not self.is_staff:
+            self.is_staff = True
+            update_fields = kwargs.get('update_fields')
+            if update_fields is not None:
+                kwargs['update_fields'] = set(update_fields) | {'is_staff'}
+
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -215,8 +275,8 @@ class UserDocument(models.Model):
 
     user = models.ForeignKey('User', on_delete=models.CASCADE, related_name='documents')
     doc_type = models.CharField(max_length=20, choices=DocType.choices)
-    image = models.ImageField(upload_to='documents/%Y/%m/')
-    image_verso = models.ImageField(upload_to='documents/%Y/%m/', null=True, blank=True)
+    image = models.ImageField(upload_to='documents/%Y/%m/', validators=[validate_upload_size])
+    image_verso = models.ImageField(upload_to='documents/%Y/%m/', null=True, blank=True, validators=[validate_upload_size])
     doc_number = models.CharField(max_length=100, blank=True)
     status = models.CharField(max_length=10, choices=ValidationStatus.choices, default=ValidationStatus.PENDING)
     validated_by = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='validated_documents')

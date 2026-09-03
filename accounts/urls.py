@@ -13,6 +13,7 @@ from .views import (
     AuditLogViewSet,
     UserManagementViewSet,
     ForgotPasswordView,
+    ChangePasswordView,
     DirectoryUserViewSet,
     PilotageSettingsViewSet,
     MemberTitleViewSet,
@@ -49,11 +50,17 @@ user_document_detail = UserDocumentViewSet.as_view(
     }
 )
 
+from .token_views import VersionedTokenRefreshView
+
 urlpatterns = [
     path('auth/register/', RegisterView.as_view(), name='register'),
     path('auth/login/', CustomTokenObtainPairView.as_view(), name='login'),
-    path('auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    # Vue versionnée : refuse de rafraîchir un jeton d'une génération
+    # périmée. Avec la vue standard, une session révoquée se serait
+    # renouvelée toute seule pendant les 24 h de vie du jeton.
+    path('auth/refresh/', VersionedTokenRefreshView.as_view(), name='token_refresh'),
     path('auth/forgot-password/', ForgotPasswordView.as_view(), name='forgot_password'),
+    path('auth/change-password/', ChangePasswordView.as_view(), name='change_password'),
     path('profile/', ProfileView.as_view(), name='profile'),
 
     path('users/<int:user_id>/documents/', user_documents, name='user-documents'),

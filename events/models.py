@@ -2,6 +2,7 @@
 from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
+from core.validators import downscale_image, validate_upload_size
 
 
 class Fete(models.Model):
@@ -35,7 +36,7 @@ class Campaign(models.Model):
 
     name = models.CharField(max_length=200)
     description = models.TextField(blank=True, null=True)
-    illustrative_photo = models.ImageField(upload_to='campaigns/photos/', blank=True, null=True)
+    illustrative_photo = models.ImageField(upload_to='campaigns/photos/', blank=True, null=True, validators=[validate_upload_size])
     goal_amount = models.DecimalField(max_digits=15, decimal_places=2, blank=True, null=True)
     objective = models.TextField(blank=True, null=True)
     deadline = models.DateField()
@@ -76,6 +77,14 @@ class Campaign(models.Model):
         if user.role in ['admin', 'chef_daara']:
             return True
         return self.organizer_id == user.id and self.is_management_open()
+
+    def save(self, *args, **kwargs):
+        # Réduction à la source : le plafond de 15 Mo dit ce qu'on accepte,
+        # pas ce qu'on doit réservir à chaque visiteur. Voir
+        # core.validators.downscale_image — sans effet si l'image tient déjà
+        # dans les bornes, et silencieuse en cas d'échec.
+        downscale_image(self.illustrative_photo)
+        super().save(*args, **kwargs)
 
 
 class CampaignTodo(models.Model):

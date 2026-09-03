@@ -14,7 +14,28 @@ import os
 import sys
 import warnings
 from pathlib import Path
-from decouple import config
+
+from django.core.exceptions import ImproperlyConfigured
+from decouple import Config, RepositoryEnv, config as _auto_config
+
+# ═══════════════════════════════════════════════════════════════════════════
+# D'où viennent les réglages
+# ═══════════════════════════════════════════════════════════════════════════
+# `decouple.config` (AutoConfig) remonte l'arborescence en cherchant un fichier
+# nommé `.env`. Il tombe donc sur celui de la RACINE du dépôt — qui ne porte
+# que les identifiants Postgres et le port du front — et ne voit jamais
+# `core/.env.local`, où vivent les vrais réglages du backend.
+#
+# En conteneur, le défaut ne se voyait pas : docker-compose injecte
+# `core/.env.local` par `env_file:`, donc les valeurs arrivent par
+# l'environnement. En local, elles n'arrivaient pas du tout — et Django
+# retombait silencieusement sur ses valeurs par défaut.
+#
+# On charge donc le fichier explicitement. L'environnement garde la priorité
+# (c'est la règle de `decouple.Config.get`), ce qui laisse intacts le
+# conteneur et la production.
+_ENV_LOCAL = Path(__file__).resolve().parent / '.env.local'
+config = Config(RepositoryEnv(_ENV_LOCAL)) if _ENV_LOCAL.is_file() else _auto_config
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -25,7 +46,14 @@ FIREBASE_SERVICE_ACCOUNT_FILENAME = 'yessal-gui-6d7e0-firebase-adminsdk-fbsvc-35
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = config('SECRET_KEY', default='django-insecure-default-key-for-dev-purposes-only-replace-in-production')
+#
+# La valeur de repli ne sert QU'en développement. En production, une clé
+# devinable rend falsifiables les jetons de session, les liens de
+# réinitialisation de mot de passe et les signatures de formulaire : le
+# démarrage échoue plutôt que de servir une application vulnérable en silence
+# (voir le contrôle plus bas, une fois DEBUG connu).
+DEV_SECRET_KEY = 'django-insecure-default-key-for-dev-purposes-only-replace-in-production'
+SECRET_KEY = config('SECRET_KEY', default=DEV_SECRET_KEY)
 
 # SECURITY WARNING: don't run with debug turned on in production!
 def _coerce_debug(value):
@@ -49,9 +77,25 @@ DEBUG = _coerce_debug(config('DEBUG', default='true'))
 
 ALLOWED_HOSTS = ['*'] if DEBUG else _list_env(config('ALLOWED_HOSTS', default='localhost,127.0.0.1'))
 
-CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=True, cast=bool)
+if not DEBUG and SECRET_KEY == DEV_SECRET_KEY:
+    raise ImproperlyConfigured(
+        "SECRET_KEY porte encore la valeur de développement alors que DEBUG=False. "
+        "Renseignez SECRET_KEY (50+ caractères aléatoires) dans l'environnement."
+    )
+
+# Le défaut suit DEBUG : ouvert en local, fermé dès qu'on quitte le mode
+# développement. Auparavant `default=True` laissait n'importe quelle origine
+# appeler l'API avec le jeton de la victime, y compris en production.
+CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=DEBUG, cast=bool)
 CORS_ALLOWED_ORIGINS = [] if CORS_ALLOW_ALL_ORIGINS else _list_env(config('CORS_ALLOWED_ORIGINS', default=''))
+CORS_ALLOW_CREDENTIALS = config('CORS_ALLOW_CREDENTIALS', default=False, cast=bool)
 CSRF_TRUSTED_ORIGINS = _list_env(config('CSRF_TRUSTED_ORIGINS', default=''))
+
+if not DEBUG and not CORS_ALLOW_ALL_ORIGINS and not CORS_ALLOWED_ORIGINS:
+    raise ImproperlyConfigured(
+        "CORS_ALLOWED_ORIGINS est vide en production : le front ne pourra pas "
+        "appeler l'API. Renseignez les origines autorisées."
+    )
 
 
 # Application definition
@@ -97,6 +141,7 @@ AUTH_USER_MODEL = 'accounts.User'
 
 
 MIDDLEWARE = [
+    'core.middleware.PublicHostMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -114,7 +159,11 @@ ROOT_URLCONF = 'core.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        # Les gabarits de courriel sont transverses : ils parlent de dons, de
+        # documents et de titres, donc d'au moins trois applications. Les loger
+        # dans l'une d'elles serait arbitraire — d'où un dossier au niveau du
+        # projet, en plus de la découverte par application.
+        'DIRS': [BASE_DIR / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -132,7 +181,9 @@ WSGI_APPLICATION = 'core.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
-if 'test' in sys.argv:
+TESTING = 'test' in sys.argv
+
+if TESTING:
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
@@ -174,7 +225,13 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/6.0/topics/i18n/
 
-LANGUAGE_CODE = 'en-us'
+# Français : les messages que Django génère lui-même remontent tels quels dans
+# l'interface. Les règles de robustesse des mots de passe, par exemple,
+# renvoyaient « This password is too short. It must contain at least 8
+# characters. » à des membres d'une confrérie sénégalaise, au milieu d'un
+# formulaire entièrement en français. Django traduit ces messages, encore
+# faut-il le lui demander.
+LANGUAGE_CODE = 'fr-fr'
 
 TIME_ZONE = 'UTC'
 
@@ -189,14 +246,48 @@ USE_TZ = True
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
+# Les illustrations des courriels vivent dans `static/emails/`. Sans cette
+# ligne, `collectstatic` ne regarde que les dossiers `static/` DES
+# APPLICATIONS : un dossier à la racine du projet serait ignoré, et les images
+# ne seraient servies nulle part.
+STATICFILES_DIRS = [BASE_DIR / 'static']
+
 # CORS Settings
 # Set this to False in production and configure CORS_ALLOWED_ORIGINS.
 
 # Django Rest Framework Settings
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
-    )
+        # Sous-classe de JWTAuthentication qui refuse les jetons d'une
+        # génération périmée. Sans elle, changer un mot de passe ne fermait
+        # AUCUNE des sessions déjà ouvertes — voir accounts/authentication.py.
+        'accounts.authentication.VersionedJWTAuthentication',
+    ),
+    # ═══════════════════════════════════════════════════════════════════════
+    # Fermé par défaut
+    # ═══════════════════════════════════════════════════════════════════════
+    # Sans cette clé, DRF retombe sur `AllowAny` : toute vue écrite sans
+    # `permission_classes` — ou tout `@action` dont on oublie la ligne — est
+    # publique, en silence, sans que rien ne le signale. Le défaut inverse
+    # transforme l'oubli en 401 visible plutôt qu'en fuite de données.
+    #
+    # Les rares points d'entrée réellement publics (inscription, connexion,
+    # liste des Daaras pour le formulaire d'inscription) déclarent
+    # explicitement `AllowAny`.
+    'DEFAULT_PERMISSION_CLASSES': (
+        'rest_framework.permissions.IsAuthenticated',
+    ),
+    # Freine le bourrage d'identifiants sur /auth/login/ et l'aspiration de
+    # l'annuaire des membres. Les quotas restent larges : un collecteur en
+    # tournée enchaîne les enregistrements.
+    'DEFAULT_THROTTLE_CLASSES': (
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ),
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': config('THROTTLE_ANON', default='60/min'),
+        'user': config('THROTTLE_USER', default='1000/hour'),
+    },
 }
 
 # JWT Settings
@@ -253,6 +344,24 @@ else:
         },
     }
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Les tests n'écrivent pas dans le vrai dossier des médias
+# ═══════════════════════════════════════════════════════════════════════════
+# MEDIA_ROOT pointait sur `media/` y compris sous `manage.py test`. Chaque test
+# téléversant une image y déposait donc un fichier — `photo.jpg`,
+# `photo_NIybCVn.jpg`, `cni.jpg` — au milieu des vrais avatars et des vraies
+# pièces d'identité. Personne ne les nettoyait, et rien ne les distinguait des
+# fichiers légitimes.
+#
+# Un répertoire temporaire par exécution règle les deux problèmes : le dossier
+# réel n'est plus touché, et les tests repartent d'un disque vierge — donc
+# reproductibles.
+if TESTING:
+    import tempfile
+
+    MEDIA_ROOT = Path(tempfile.mkdtemp(prefix='yessal-test-media-'))
+
+
 # Django Import Export
 IMPORT_EXPORT_USE_TRANSACTIONS = True
 
@@ -265,12 +374,96 @@ BANK_ACCOUNT = {
     'reference_format': config('BANK_REFERENCE_FORMAT', default=''),
 }
 
-# Pusher settings for real-time chat
-PUSHER_APP_ID = config('PUSHER_APP_ID', default='2157369')
-PUSHER_KEY = config('PUSHER_KEY', default='0369577c46baf67bfc0a')
-PUSHER_SECRET = config('PUSHER_SECRET', default='2f6edb42cbc7120b33cb')
+# ═══════════════════════════════════════════════════════════════════════════
+# Pusher — messagerie temps réel
+# ═══════════════════════════════════════════════════════════════════════════
+# Les identifiants de l'application Pusher figuraient ici en clair, en valeur
+# de repli. Un secret présent dans le dépôt est un secret public : il part dans
+# chaque clone, chaque fork, chaque image Docker. Ils sont désormais lus dans
+# l'environnement, sans repli — une valeur vide désactive proprement le temps
+# réel plutôt que de tenter une connexion avec des identifiants d'exemple.
+PUSHER_APP_ID = config('PUSHER_APP_ID', default='')
+PUSHER_KEY = config('PUSHER_KEY', default='')
+PUSHER_SECRET = config('PUSHER_SECRET', default='')
 PUSHER_CLUSTER = config('PUSHER_CLUSTER', default='eu')
 PUSHER_SSL = config('PUSHER_SSL', default=True, cast=bool)
+PUSHER_ENABLED = bool(PUSHER_APP_ID and PUSHER_KEY and PUSHER_SECRET)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Bictorys — passerelle de paiement
+# ═══════════════════════════════════════════════════════════════════════════
+# Ces quatre clés étaient renseignées dans .env mais AUCUNE n'était lue ici.
+# `getattr(settings, 'BICTORYS_...', défaut)` retombait donc systématiquement
+# sur le défaut : la passerelle appelait l'API avec la clé littérale
+# 'test_key', et le webhook — qui ne vérifie sa signature que « si le secret
+# est configuré » — ne vérifiait rien du tout. N'importe qui pouvait marquer
+# un don comme encaissé.
+BICTORYS_BASE_URL = config('BICTORYS_BASE_URL', default='https://api.test.bictorys.com')
+BICTORYS_PUBLIC_KEY = config('BICTORYS_PUBLIC_KEY', default='')
+BICTORYS_SECRET_KEY = config('BICTORYS_SECRET_KEY', default='')
+BICTORYS_WEBHOOK_SECRET = config('BICTORYS_WEBHOOK_SECRET', default='')
+BICTORYS_ENABLED = bool(BICTORYS_PUBLIC_KEY and BICTORYS_SECRET_KEY)
+
+if not DEBUG and BICTORYS_ENABLED and not BICTORYS_WEBHOOK_SECRET:
+    raise ImproperlyConfigured(
+        "BICTORYS_WEBHOOK_SECRET est obligatoire dès que la passerelle de "
+        "paiement est active : sans lui, le webhook d'encaissement accepte "
+        "n'importe quel appel anonyme."
+    )
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Courrier sortant
+# ═══════════════════════════════════════════════════════════════════════════
+# Renseigné dans .env, jamais lu : Django restait sur le backend SMTP par
+# défaut (localhost:25). En l'absence d'hôte configuré, on écrit dans la
+# console plutôt que d'échouer sur une connexion refusée.
+EMAIL_HOST = config('EMAIL_HOST', default='')
+EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
+EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='no-reply@yessal.sn')
+EMAIL_BACKEND = (
+    'django.core.mail.backends.smtp.EmailBackend'
+    if EMAIL_HOST
+    else 'django.core.mail.backends.console.EmailBackend'
+)
+
+# Nom affiché comme expéditeur, à côté de l'adresse.
+EMAIL_FROM_NAME = config('EMAIL_FROM_NAME', default='Yessal Gui')
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Illustrations des courriels
+# ═══════════════════════════════════════════════════════════════════════════
+# Une boîte mail n'a aucun contexte pour résoudre un chemin relatif : un
+# `src="illustrations/gift.png"` ne pointe nulle part une fois le message
+# ouvert dans Gmail. Il faut une URL absolue, servie publiquement.
+#
+# Les images sont donc dans `static/emails/illustrations/` (WhiteNoise les
+# sert), et les gabarits les référencent via `{{ illustrations }}`.
+#
+# Aucune dérivation automatique : l'URL publique du backend ne se déduit de
+# rien de fiable — ni de BASE_URL, qui désigne le FRONT. On la renseigne.
+EMAIL_ASSETS_URL = config(
+    'EMAIL_ASSETS_URL',
+    default='http://localhost:8000/static/emails/illustrations',
+).rstrip('/')
+
+# Adresse de réponse : les courriels partent d'une boîte qui n'écoute pas.
+# Sans « Reply-To », une réponse d'un membre se perd en silence.
+EMAIL_REPLY_TO = config('EMAIL_REPLY_TO', default='')
+
+# Coupe-circuit global. Un envoi en masse pendant une reprise de données, ou
+# un test sur une copie de la base de production, part sinon vers de vraies
+# adresses. `False` laisse le code s'exécuter normalement et journalise ce qui
+# aurait été envoyé.
+EMAIL_ENABLED = config('EMAIL_ENABLED', default=True, cast=bool)
+
+# URL publique du front, pour les liens envoyés par courriel.
+BASE_URL = config('BASE_URL', default='http://localhost:3000')
+
+# Durée de validité d'un lien de réinitialisation de mot de passe.
+PASSWORD_RESET_TIMEOUT = config('PASSWORD_RESET_TIMEOUT', default=60 * 60 * 24, cast=int)
 
 # Firebase Cloud Messaging
 _firebase_credentials_default = Path('/run/secrets/firebase/firebase-sa.json')
@@ -281,3 +474,111 @@ FIREBASE_CREDENTIALS_PATH = Path(
 if not FIREBASE_CREDENTIALS_PATH.exists() and _firebase_credentials_fallback.exists():
     FIREBASE_CREDENTIALS_PATH = _firebase_credentials_fallback
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Téléversements — plafond explicite
+# ═══════════════════════════════════════════════════════════════════════════
+# Il n'existait aucune limite applicative : Django gardait ses valeurs par
+# défaut, et seul nginx plafonnait (20 Mo), en renvoyant une page 413 illisible.
+# Un membre déposant une photo prise au téléphone se heurtait donc à un échec
+# sans explication.
+#
+# Le plafond est désormais annoncé côté front (composant FileDrop) ET vérifié
+# ici : contourner l'interface ne suffit pas à passer outre.
+#
+# MAX_UPLOAD_SIZE est consommé par `core.validators.validate_upload_size`,
+# rattaché aux champs de fichier des modèles.
+MAX_UPLOAD_SIZE = config('MAX_UPLOAD_SIZE', default=15 * 1024 * 1024, cast=int)
+
+# Au-delà de ce seuil, Django écrit le fichier sur disque au lieu de le garder
+# en mémoire. Aligné sur le plafond pour éviter qu'un envoi valide soit
+# fractionné inutilement.
+FILE_UPLOAD_MAX_MEMORY_SIZE = MAX_UPLOAD_SIZE
+
+# Taille maximale du corps de requête HORS fichiers (champs de formulaire).
+# Reste modeste : aucun formulaire du produit n'envoie autant de texte.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 5 * 1024 * 1024
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Durcissement HTTP (production uniquement)
+# ═══════════════════════════════════════════════════════════════════════════
+# `manage.py check --deploy` signalait cinq manques : W004 (HSTS), W008
+# (redirection SSL), W012 et W016 (cookies non marqués « secure »). Ils sont
+# conditionnés à DEBUG pour que le développement en http://localhost continue
+# de fonctionner — un SECURE_SSL_REDIRECT actif en local boucle à l'infini.
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = 'DENY'
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SAMESITE = 'Lax'
+
+if not DEBUG:
+    # Derrière nginx / le routeur de Render, c'est l'en-tête transmis par le
+    # proxy qui dit si la requête d'origine était en HTTPS. Sans cette ligne,
+    # Django voit du http, redirige vers https, et le proxy renvoie la même
+    # requête : boucle de redirection.
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=True, cast=bool)
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = config('SECURE_HSTS_SECONDS', default=31536000, cast=int)
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Journalisation
+# ═══════════════════════════════════════════════════════════════════════════
+# Aucune configuration n'existait : les `logger.error()` du webhook de
+# paiement et des services Firebase n'apparaissaient nulle part, et une
+# exception dans une vue se perdait avec DEBUG=False. Tout part sur la sortie
+# standard, que Docker et Render collectent déjà.
+LOG_LEVEL = config('LOG_LEVEL', default='INFO' if not DEBUG else 'DEBUG')
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'standard': {
+            'format': '[{asctime}] {levelname} {name}: {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'standard',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': LOG_LEVEL,
+    },
+    'loggers': {
+        # Une 500 doit laisser une trace même quand DEBUG=False.
+        'django.request': {
+            'handlers': ['console'],
+            'level': 'ERROR',
+            'propagate': False,
+        },
+        # Tentatives d'accès rejetées, hôtes non autorisés, jetons falsifiés.
+        'django.security': {
+            'handlers': ['console'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
+        # ═══════════════════════════════════════════════════════════════════
+        # Bibliothèques tierces bavardes
+        # ═══════════════════════════════════════════════════════════════════
+        # En développement, la racine est à DEBUG — c'est voulu pour notre
+        # code. Mais Pillow détaille alors CHAQUE étiquette EXIF de chaque
+        # image lue : réduire deux photos noyait la console sous quarante
+        # lignes de `tag: XResolution (282) - type: rational…`. Le bruit d'une
+        # dépendance masque les messages qu'on cherche.
+        **{
+            nom: {'handlers': ['console'], 'level': 'INFO', 'propagate': False}
+            for nom in ('PIL', 'urllib3', 'botocore', 'boto3', 's3transfer', 'asyncio')
+        },
+    },
+}

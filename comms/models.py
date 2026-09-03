@@ -1,6 +1,7 @@
 from django.db import models
 from django.conf import settings
 from django.utils.translation import gettext_lazy as _
+from core.validators import validate_upload_size
 
 class Chat(models.Model):
     class ChatType(models.TextChoices):
@@ -89,7 +90,7 @@ class Message(models.Model):
         default=MessageType.TEXT
     )
     content = models.TextField()
-    file = models.FileField(upload_to='chat_files/', null=True, blank=True)
+    file = models.FileField(upload_to='chat_files/', null=True, blank=True, validators=[validate_upload_size])
     reply_to = models.ForeignKey(
         'self',
         on_delete=models.SET_NULL,

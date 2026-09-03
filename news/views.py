@@ -32,7 +32,17 @@ class NewsPostViewSet(viewsets.ModelViewSet):
             NewsGalleryImage.objects.create(post=post, image=image)
 
     @action(detail=True, methods=['post'])
-    def gallery(self, request, pk=None):
+    def gallery(self, request, *args, **kwargs):
+        """
+        Ajoute une image à la galerie d'un article.
+
+        La signature était `gallery(self, request, pk=None)`, alors que ce
+        ViewSet a `lookup_field = 'slug'` : le routeur passe `slug='...'`, que
+        la méthode n'accepte pas. Tout appel à
+        `POST /api/news/posts/<slug>/gallery/` levait donc un TypeError — une
+        500, pas la 400 qu'on aurait pu croire. `*args, **kwargs` rend la
+        méthode indifférente au nom de la clé de recherche.
+        """
         post = self.get_object()
         serializer = NewsGalleryImageSerializer(data=request.data)
         if serializer.is_valid():

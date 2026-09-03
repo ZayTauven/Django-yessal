@@ -34,19 +34,39 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
         user = self.request.user
         base = Donation.objects.select_related('campaign', 'donor', 'collector', 'target_daara', 'archive_id')
 
+        # 1. Portée autorisée par le rôle.
         if user.role == 'admin':
-            return base
-
-        if user.role == 'collector':
+            queryset = base
+        elif user.role == 'collector':
             # Multi-Daara collection: no daara restriction.
-            return base.filter(collector=user)
-
-        if user.role == 'chef_daara':
+            queryset = base.filter(collector=user)
+        elif user.role == 'chef_daara':
             if user.daara_id:
-                return base.filter(donor__daara=user.daara, archive_id__isnull=True)
-            return Donation.objects.none()
+                queryset = base.filter(donor__daara=user.daara, archive_id__isnull=True)
+            else:
+                return Donation.objects.none()
+        else:
+            queryset = base.filter(donor=user, archive_id__isnull=True)
 
-        return base.filter(donor=user, archive_id__isnull=True)
+        # 2. Filtre demandé par l'appelant, APPLIQUÉ APRÈS la portée du rôle.
+        #
+        # L'ordre n'est pas une commodité d'écriture : il est la garantie qu'un
+        # paramètre d'URL ne peut jamais ÉLARGIR ce qu'un rôle a le droit de
+        # voir. Un chef de Daara qui demande `?user_id=` d'un membre d'un autre
+        # Daara obtient une liste vide, pas les dons de ce membre.
+        #
+        # Le paramètre était envoyé par la fiche membre du front
+        # (`getUserDonations`) depuis toujours, mais n'était lu nulle part : la
+        # fiche d'un membre affichait donc les dons de TOUT le réseau — 61 Jëfs
+        # et 1 933 000 FCFA attribués à une seule personne.
+        donor_id = self.request.query_params.get('user_id')
+        if donor_id:
+            try:
+                queryset = queryset.filter(donor_id=int(donor_id))
+            except (TypeError, ValueError):
+                return Donation.objects.none()
+
+        return queryset
 
     def perform_create(self, serializer):
         user = self.request.user

@@ -1,6 +1,7 @@
+import hmac
 import json
 import logging
-from django.http import HttpResponse, HttpResponseBadRequest
+from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseForbidden
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from django.conf import settings
@@ -8,19 +9,43 @@ from .models import Donation
 
 logger = logging.getLogger(__name__)
 
+
 @csrf_exempt
 @require_POST
 def bictorys_webhook(request):
     """
-    Endpoint to receive Bictorys payment notifications.
+    Point d'entrée des notifications de paiement Bictorys.
+
+    ═══════════════════════════════════════════════════════════════════════
+    Cette vue confirme des encaissements. Elle doit refuser par défaut.
+    ═══════════════════════════════════════════════════════════════════════
+    L'authentification s'écrivait « si un secret est configuré, le vérifier ».
+    Or `BICTORYS_WEBHOOK_SECRET` n'était lu nulle part dans settings.py :
+    `getattr()` renvoyait None, la condition était fausse, et le contrôle
+    sautait entièrement. Cet endpoint — public, exempté de CSRF — acceptait
+    donc n'importe quel POST anonyme et marquait le don visé comme encaissé.
+
+    Deux corrections :
+
+      · La clé absente FERME l'accès au lieu de l'ouvrir. Un webhook qu'on ne
+        sait pas authentifier ne vaut pas mieux qu'un webhook ouvert.
+      · La comparaison passe par `hmac.compare_digest`, insensible au temps :
+        `!=` s'arrête au premier octet différent et laisse deviner le secret
+        caractère par caractère.
     """
-    # 1. Validate Webhook Secret
-    received_secret = request.headers.get("X-Secret-Key")
-    expected_secret = getattr(settings, 'BICTORYS_WEBHOOK_SECRET', None)
-    
-    if expected_secret and received_secret != expected_secret:
-        logger.warning(f"Invalid Bictorys webhook secret: {received_secret}")
-        return HttpResponseBadRequest("Invalid secret")
+    expected_secret = getattr(settings, 'BICTORYS_WEBHOOK_SECRET', '')
+    if not expected_secret:
+        logger.error(
+            "Webhook Bictorys appelé alors que BICTORYS_WEBHOOK_SECRET n'est "
+            "pas configuré : appel rejeté."
+        )
+        return HttpResponseForbidden("Webhook not configured")
+
+    received_secret = request.headers.get("X-Secret-Key", "")
+    if not hmac.compare_digest(received_secret, expected_secret):
+        # On ne journalise pas la valeur reçue : elle finirait dans les logs.
+        logger.warning("Signature de webhook Bictorys invalide (rejeté).")
+        return HttpResponseForbidden("Invalid secret")
 
     # 2. Parse Payload
     try:
@@ -52,8 +77,19 @@ def bictorys_webhook(request):
 
     # 6. Update Status
     if status in ("succeeded", "authorized"):
+        # Le montant vient d'un tiers : un champ non numérique ferait lever
+        # int() et renverrait une 500, que Bictorys réessaierait en boucle.
+        try:
+            amount_received = int(float(amount_received))
+        except (TypeError, ValueError):
+            logger.warning(
+                "Montant illisible dans le webhook du don %s : %r",
+                donation.id, amount_received,
+            )
+            return HttpResponseBadRequest("Invalid amount")
+
         # Verify amount if possible (Bictorys amount is in XOF)
-        if int(amount_received) >= int(donation.amount):
+        if amount_received >= int(donation.amount):
             donation.payment_status = Donation.PaymentStatus.CONFIRMED
             donation.bictorys_ref = bictorys_id
             donation.save(update_fields=["payment_status", "bictorys_ref"])

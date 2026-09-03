@@ -1,12 +1,24 @@
+import logging
 import uuid
+
 import requests
 from django.conf import settings
 from django.core.exceptions import ValidationError
 
-# Bictorys Configuration (should be in settings.py)
-BICTORYS_BASE_URL = getattr(settings, 'BICTORYS_BASE_URL', 'https://api.test.bictorys.com')
-BICTORYS_API_KEY  = getattr(settings, 'BICTORYS_PUBLIC_KEY', 'test_key')
-BASE_URL = getattr(settings, 'BASE_URL', 'http://127.0.0.1:8000')
+logger = logging.getLogger(__name__)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Les réglages se lisent à l'APPEL, pas à l'import
+# ═══════════════════════════════════════════════════════════════════════════
+# Ces trois constantes étaient figées au chargement du module, avec des replis
+# ('test_key', 127.0.0.1) qui masquaient le vrai défaut : aucune des clés
+# BICTORYS_* n'était lue par settings.py. La passerelle appelait donc l'API de
+# test avec la clé littérale « test_key », et l'échec ne ressemblait pas à une
+# erreur de configuration — juste à un paiement refusé.
+#
+# Les valeurs sont désormais lues dans settings au moment de l'appel : les
+# tests peuvent les surcharger, et un déploiement mal configuré échoue avec un
+# message qui dit quoi renseigner.
 
 PAYMENT_TYPE_MAP = {
     'orange_money': 'orange_money',
@@ -20,6 +32,16 @@ def initiate_bictorys_payment(donation, payment_method: str) -> dict:
     Initiates a Bictorys charge for a donation.
     Returns the Bictorys response including checkoutUrl for cards or direct response for mobile money.
     """
+    if not getattr(settings, 'BICTORYS_ENABLED', False):
+        raise ValidationError(
+            "La passerelle de paiement n'est pas configurée "
+            "(BICTORYS_PUBLIC_KEY / BICTORYS_SECRET_KEY manquantes)."
+        )
+
+    base_url = settings.BICTORYS_BASE_URL
+    api_key = settings.BICTORYS_PUBLIC_KEY
+    public_base = settings.BASE_URL
+
     payment_reference = f"don_{donation.id}_{uuid.uuid4().hex[:6]}"
     payment_type = PAYMENT_TYPE_MAP.get(payment_method)
 
@@ -29,8 +51,8 @@ def initiate_bictorys_payment(donation, payment_method: str) -> dict:
         "currency": "XOF",
         "country": "SN",
         "paymentReference": payment_reference,
-        "successRedirectUrl": f"{BASE_URL}/contributions/success/{donation.id}/",
-        "errorRedirectUrl": f"{BASE_URL}/contributions/error/{donation.id}/",
+        "successRedirectUrl": f"{public_base}/contributions/success/{donation.id}/",
+        "errorRedirectUrl": f"{public_base}/contributions/error/{donation.id}/",
         "customer": {
             "name": f"{donation.donor.first_name} {donation.donor.last_name}",
             "phone": donation.donor.phone or "",
@@ -42,13 +64,13 @@ def initiate_bictorys_payment(donation, payment_method: str) -> dict:
         "allowUpdateCustomer": False,
     }
 
-    url = f"{BICTORYS_BASE_URL}/pay/v1/charges"
+    url = f"{base_url}/pay/v1/charges"
     if payment_type:
         url += f"?payment_type={payment_type}"
 
     headers = {
         "Content-Type": "application/json",
-        "X-Api-Key": BICTORYS_API_KEY,
+        "X-Api-Key": api_key,
     }
 
     try:
@@ -72,5 +94,9 @@ def initiate_bictorys_payment(donation, payment_method: str) -> dict:
         }
 
     except requests.exceptions.RequestException as e:
-        print(f"Bictorys Error: {str(e)}")
-        raise ValidationError(f"Erreur lors de l'initiation du paiement Bictorys: {str(e)}")
+        # `print` n'atterrit dans aucun journal exploitable, et le détail
+        # de l'erreur du prestataire n'a pas à remonter jusqu'au donateur.
+        logger.exception("Échec d'initiation du paiement Bictorys (don %s)", donation.id)
+        raise ValidationError(
+            "Le service de paiement est momentanément indisponible. Réessayez dans un instant."
+        ) from e

@@ -33,6 +33,21 @@ WORKDIR /app
 # Copy the application code
 COPY --chown=appuser:appuser . .
 
+# ═══════════════════════════════════════════════════════════════════════════
+# /app/media doit exister DANS l'image, et appartenir à appuser
+# ═══════════════════════════════════════════════════════════════════════════
+# `media/` est exclu par .dockerignore : le dossier n'existait donc pas dans
+# l'image. Quand docker-compose y monte un volume nommé, Docker crée le point
+# de montage — et le crée en root, faute de rien à recopier depuis l'image.
+#
+# Le conteneur, lui, tourne en `appuser`. Résultat : Django ne peut plus écrire
+# aucun téléversement, et chaque envoi d'image échoue sur
+# `PermissionError: [Errno 13] Permission denied: '/app/media/news'`.
+#
+# En créant le dossier ici avec le bon propriétaire, Docker initialise le
+# volume à partir de lui — permissions comprises.
+RUN mkdir -p /app/media && chown -R appuser:appuser /app/media
+
 # Set environment variables for Django
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1

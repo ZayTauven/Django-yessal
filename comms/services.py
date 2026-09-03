@@ -5,7 +5,14 @@ try:
 except ImportError:
     pusher = None
 
-# Initialisation du client Pusher
+# Initialisation du client Pusher.
+#
+# `pusher.Pusher(app_id='')` lève `ValueError: Invalid app id` DANS le
+# constructeur, à l'import du module. Le garde-fou `if pusher` ne couvrait que
+# l'absence de la bibliothèque, pas l'absence d'identifiants — or c'est le cas
+# courant : un développeur qui clone le dépôt sans compte Pusher voyait Django
+# refuser de démarrer, alors que `trigger_pusher` sait déjà se taire quand le
+# client est absent. On teste donc aussi la configuration (PUSHER_ENABLED).
 pusher_client = (
     pusher.Pusher(
         app_id=settings.PUSHER_APP_ID,
@@ -14,7 +21,7 @@ pusher_client = (
         cluster=settings.PUSHER_CLUSTER,
         ssl=settings.PUSHER_SSL,
     )
-    if pusher
+    if pusher and getattr(settings, 'PUSHER_ENABLED', False)
     else None
 )
 
