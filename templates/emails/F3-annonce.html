@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <meta name="supported-color-schemes" content="light dark">
-<title>Votre accès à Yessal Gui a été suspendu</title>
-<!-- Yessal Gui · courriel « compte_bloque » · objet défini dans core/mail.py : SUJETS['compte_bloque'] -->
+<title>{{ titre }}</title>
+<!-- Yessal Gui · courriel « annonce » · objet défini dans core/mail.py : SUJETS['annonce'] -->
 <!--[if mso]>
 <style>body,table,td,a{font-family:Arial,Helvetica,sans-serif !important}</style>
 <![endif]-->
@@ -18,7 +18,7 @@
 </style>
 </head>
 <body style="margin:0;padding:0;background-color:#eeeef6;">
-<span style="display:none;font-size:1px;color:#eeeef6;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">Vos Jëfs déjà enregistrés sont conservés et restent comptabilisés.</span>
+<span style="display:none;font-size:1px;color:#eeeef6;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">{{ titre }}</span>
 
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#eeeef6;">
 <tr><td align="center" style="padding:28px 12px 44px 12px;">
@@ -32,7 +32,7 @@
           Yessal&nbsp;Gui
         </td>
         <td align="right" class="sc-pad" style="padding:26px 36px 26px 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:24px;color:#c3bdf7;letter-spacing:.08em;text-transform:uppercase;">
-          Compte et accès
+          Annonce
         </td>
       </tr>
       </table>
@@ -40,52 +40,43 @@
     <tr><td height="4" bgcolor="#ffcd3c" style="height:4px;line-height:4px;font-size:0;background-color:#ffcd3c;">&nbsp;</td></tr>
 
     <tr><td class="sc-pad" style="padding:40px 36px 0 36px;">
-      <!-- ILLUSTRATION — remplacer le src relatif par une URL https absolue avant envoi. Source : planche « notifications », ligne 2 · colonne 2 — cône de signalisation -->
-      <img src="illustrations/cone-signalisation.png"
-           width="112" height="112" alt="Un cône de signalisation entouré de fanions"
+      <!-- ILLUSTRATION — remplacer le src relatif par une URL https absolue avant envoi. Source : planche « notifications », ligne 3 · colonne 1 -->
+      <img src="{{ illustrations }}/porte-voix.png"
+           width="112" height="112" alt="Un porte-voix"
            style="display:block;width:112px;height:112px;border:0;outline:none;text-decoration:none;">
     </td></tr>
 
     <tr><td class="sc-pad sc-h1" style="padding:22px 36px 0 36px;font-family:Arial,Helvetica,sans-serif;font-size:27px;line-height:36px;font-weight:bold;color:#171630;mso-line-height-rule:exactly;">
-      Votre accès a été suspendu
+      {{ titre }}
     </td></tr>
 
     <tr><td class="sc-pad" style="padding:20px 36px 0 36px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:27px;color:#494764;mso-line-height-rule:exactly;">
-      Bonjour {prenom},
+      {{ contenu }}
     </td></tr>
-    <tr><td class="sc-pad" style="padding:14px 36px 0 36px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:27px;color:#494764;mso-line-height-rule:exactly;">
-      L'accès à votre compte Yessal Gui a été suspendu par un administrateur.
-    </td></tr>
-    <tr><td class="sc-pad" style="padding:16px 36px 0 36px;">
-      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;">
-      <tr>
-        <td width="50%" style="width:50%;padding:14px 12px 14px 0;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:22px;color:#8582a6;">Motif</td>
-        <td width="50%" align="right" style="width:50%;padding:14px 0;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:22px;font-weight:bold;color:#171630;">{motif}</td>
-      </tr>
+    <tr><td class="sc-pad" style="padding:28px 36px 0 36px;">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+      <tr><td align="center" bgcolor="#4a3fd4" style="border-radius:6px;">
+        <a href="{{ base_url }}/dashboard" style="display:block;padding:15px 34px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:20px;font-weight:bold;color:#ffffff;text-decoration:none;border-radius:6px;">
+          Voir dans Yessal Gui
+        </a>
+      </td></tr>
       </table>
     </td></tr>
     <tr><td class="sc-pad" style="padding:34px 36px 0 36px;">
       <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;background-color:#f5f4ff;border-radius:6px;">
       <tr><td style="padding:22px 24px 22px 24px;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:25px;color:#494764;mso-line-height-rule:exactly;">
-        <span style="display:block;font-size:12px;line-height:18px;letter-spacing:.08em;text-transform:uppercase;color:#7a76a8;padding-bottom:6px;">Vos Jëfs</span>
-        Vos Jëfs déjà enregistrés sont conservés et restent comptabilisés.
+        Vous recevez ce courriel parce que cette annonce est signalée comme <span style="font-weight:bold;color:#171630;">critique</span>. Les annonces d'information restent consultables dans le Hub, sans envoi de courriel.
       </td></tr>
       </table>
     </td></tr>
-    <tr><td class="sc-pad" style="padding:14px 36px 0 36px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:27px;color:#494764;mso-line-height-rule:exactly;">
-      Si vous pensez qu'il s'agit d'une erreur, rapprochez-vous du chef de votre Daara.
-    </td></tr>
-    <tr><td class="sc-pad" style="padding:20px 36px 40px 36px;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:25px;color:#494764;">
-      Jërëjëf.<br>
-      <span style="color:#8582a6;">L'équipe {nom_expediteur}</span>
-    </td></tr>
+    <tr><td style="padding:0 0 40px 0;font-size:0;line-height:0;">&nbsp;</td></tr>
 
     <tr><td bgcolor="#f7f7fc" class="sc-pad" style="background-color:#f7f7fc;padding:24px 36px 26px 36px;border-top:1px solid #e7e6f2;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:20px;color:#8582a6;">
       Ce message double une notification déjà disponible dans Yessal&nbsp;Gui.<br>
-      <a href="{base_url}/dashboard/profile" style="color:#4a3fd4;text-decoration:underline;">Gérer mes préférences de courriel</a>
+      <a href="{{ base_url }}/dashboard/profile" style="color:#4a3fd4;text-decoration:underline;">Gérer mes préférences de courriel</a>
       &nbsp;·&nbsp;
-      <a href="{base_url}" style="color:#4a3fd4;text-decoration:underline;">yessalgui.sn</a><br>
-      <span style="color:#a3a0bb;">© {annee} Yessal Gui — Touba, Sénégal</span>
+      <a href="{{ base_url }}" style="color:#4a3fd4;text-decoration:underline;">yessalgui.sn</a><br>
+      <span style="color:#a3a0bb;">© {{ annee }} Yessal Gui — Touba, Sénégal</span>
     </td></tr>
 
   </table>

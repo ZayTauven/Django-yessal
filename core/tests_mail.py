@@ -82,8 +82,13 @@ class EnvoiUnitaireTests(TestCase):
         """Un code sans gabarit ne doit pas faire tomber l'action métier.
 
         Confirmer un virement compte plus que notifier qu'il est confirmé.
+
+        Le code est volontairement inventé, et non emprunté au catalogue : ce
+        test s'appuyait sur `ndiguel_echeance` tant que son gabarit n'existait
+        pas, et il est tombé le jour où celui-ci a été écrit. Un test ne doit
+        pas dépendre de ce qui reste à faire.
         """
-        envoye = send_to_user(self.membre, 'ndiguel_echeance', {})
+        envoye = send_to_user(self.membre, 'code_qui_nexistera_jamais', {})
 
         self.assertFalse(envoye)
         self.assertEqual(len(django_mail.outbox), 0)

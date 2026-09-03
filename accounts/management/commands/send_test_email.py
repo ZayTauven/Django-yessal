@@ -69,17 +69,17 @@ class Command(BaseCommand):
                     f"Code inconnu : {code!r}. Codes connus : {', '.join(sorted(SUJETS))}"
                 )
             from core.mail import _contexte_commun, _message
+            from core.mail_samples import CONTEXTES
 
-            contexte = _contexte_commun({
-                'prenom': 'Test',
-                # Valeurs d'exemple pour que les gabarits aient de quoi rendre.
-                'lien_reinitialisation': f'{settings.BASE_URL}/reset-password?token=EXEMPLE',
-                'duree_validite': '24 heures',
-                'campagne': 'Ndiguel de démonstration',
-                'fete': 'Magal de démonstration',
-                'titre': 'Annonce de démonstration',
-            })
-            message = _message(destinataire, code, contexte)
+            # Le même jeu de valeurs que celui des tests : un aperçu qui ne
+            # montrerait pas les coordonnées bancaires ou le montant ne dirait
+            # rien de la mise en page réelle. Voir core/mail_samples.py.
+            exemple = dict(CONTEXTES.get(code, {}))
+            exemple.setdefault(
+                'lien_reinitialisation',
+                f'{settings.BASE_URL}/reset-password?token=EXEMPLE',
+            )
+            message = _message(destinataire, code, _contexte_commun(exemple))
         else:
             message = EmailMultiAlternatives(
                 subject="Yessal Gui — test de configuration SMTP",

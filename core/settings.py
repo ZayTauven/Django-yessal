@@ -513,7 +513,12 @@ SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Lax'
 CSRF_COOKIE_SAMESITE = 'Lax'
 
-if not DEBUG:
+# `not TESTING` autant que `not DEBUG` : la suite de tests interroge l'API en
+# http, et un SECURE_SSL_REDIRECT actif lui répond 301 au lieu de 200. Vingt-
+# trois tests sont tombés ainsi le jour où `core/.env.local` — qui porte
+# DEBUG=False — a commencé à être lu en local. Les tests doivent produire le
+# même résultat quel que soit l'environnement depuis lequel on les lance.
+if not DEBUG and not TESTING:
     # Derrière nginx / le routeur de Render, c'est l'en-tête transmis par le
     # proxy qui dit si la requête d'origine était en HTTPS. Sans cette ligne,
     # Django voit du http, redirige vers https, et le proxy renvoie la même

@@ -10,7 +10,19 @@ Chaque entrée porte un **code**. Ce code désigne trois choses à la fois :
 |---|---|
 | l'objet | `SUJETS['<code>']` dans [`core/mail.py`](../core/mail.py) |
 | le gabarit HTML | `templates/emails/<code>.html` |
-| le gabarit texte | `templates/emails/<code>.txt` |
+| le gabarit texte | `templates/emails/<code>.txt` *(facultatif)* |
+
+**Nommage des fichiers.** Les gabarits portent le préfixe du catalogue —
+`A1-inscription_recue.html` — pour rester triés par section dans
+l'explorateur. Le module résout les deux formes : `<code>.html` comme
+`<préfixe>-<code>.html`. Renommer les fichiers pour satisfaire le code aurait
+sacrifié un classement utile à une contrainte technique.
+
+**Sans `.txt`**, la version texte est dérivée du HTML : les liens sont
+conservés sous la forme « libellé (URL) », et les `<span display:block>` —
+que les gabarits utilisent comme sur-titres, faute de `<div>` fiable en
+courriel — sont traités comme des blocs. Le résultat garde le sens, pas la
+forme. Un vrai `.txt` reste préférable.
 
 L'appel se réduit alors à :
 
@@ -36,14 +48,28 @@ Vingt sujets côte à côte se relisent d'un coup d'œil ; dispersés dans vingt
 fichiers, ils divergent. Les sujets acceptent des variables : `{campagne}`,
 `{fete}`, `{titre}`.
 
-**3. Trois briques de style sont fournies par la coque.**
-`{{ p }}` (paragraphe), `{{ bouton }}` (action principale), `{{ encadre }}`
-(bloc détaché), `{{ discret }}` (mention de bas de message). Voir
-[`templates/emails/_base.html`](../templates/emails/_base.html) et le gabarit
-de référence [`mot_de_passe_oublie.html`](../templates/emails/mot_de_passe_oublie.html).
+**3. Chaque gabarit est un document autonome.**
+Pas d'héritage, pas de coque partagée : chaque fichier porte son `<!DOCTYPE>`,
+son en-tête et son pied. C'est plus verbeux qu'un `{% extends %}`, et c'est le
+bon choix ici — un courriel se relit isolément, et sa mise en page par
+`<table>` avec styles en ligne supporte mal l'indirection.
+
+Contraintes du HTML de courriel, qui expliquent la verbosité : mise en page par
+`<table>`, styles **en ligne** sur chaque balise (pas de feuille), largeur fixe
+de 600 px, couleurs en hexadécimal littéral. Outlook rend encore via le moteur
+de Word — ni flexbox, ni grid, ni variables CSS.
 
 **Variables présentes partout**, sans avoir à les passer : `user`, `prenom`,
-`base_url`, `nom_expediteur`, `annee`.
+`base_url`, `illustrations`, `nom_expediteur`, `annee`.
+
+**Images.** Une boîte mail ne résout aucun chemin relatif : `src="illustrations/gift.png"`
+ne pointe nulle part une fois le message ouvert. Les images vivent donc dans
+`static/emails/illustrations/` (servies par WhiteNoise) et se référencent
+`src="{{ illustrations }}/gift.png"`.
+
+> ⚠️ **En test local, les images resteront vides.** Gmail relaie les images par
+> ses propres serveurs, qui n'atteindront jamais un `localhost:8000`. Ce n'est
+> pas un défaut du gabarit — il faut que le backend soit publiquement joignable.
 
 ---
 
@@ -125,9 +151,8 @@ de référence [`mot_de_passe_oublie.html`](../templates/emails/mot_de_passe_oub
 **Destinataire** le titulaire du compte
 **Objet** `Réinitialisez votre mot de passe Yessal Gui`
 
-> ✅ **Gabarit déjà écrit** — sert de référence :
-> [`mot_de_passe_oublie.html`](../templates/emails/mot_de_passe_oublie.html) /
-> [`.txt`](../templates/emails/mot_de_passe_oublie.txt)
+> ✅ **Gabarit écrit** :
+> [`A4-mot_de_passe_oublie.html`](../templates/emails/A4-mot_de_passe_oublie.html)
 
 **Variables** `user`, `prenom`, `lien_reinitialisation`, `duree_validite`
 
@@ -662,7 +687,8 @@ l'environnement du service (production). Modèle complet et commenté :
 | `EMAIL_FROM_NAME` | `Yessal Gui` | `Yessal Gui` |
 | `EMAIL_REPLY_TO` | votre adresse | `contact@yessalgui.sn` |
 | `EMAIL_ENABLED` | `True` | `True` |
-| `BASE_URL` | `http://localhost:3100` | `https://yessalgui.sn` |
+| `BASE_URL` — le **front** | `http://localhost:3100` | `https://yessalgui.sn` |
+| `EMAIL_ASSETS_URL` — le **backend** | `http://localhost:8000/static/emails/illustrations` | `https://api.yessalgui.sn/static/emails/illustrations` |
 
 `EMAIL_HOST` vide fait basculer Django sur le backend **console** : les
 messages s'affichent dans le terminal au lieu de partir. C'est le défaut, et
@@ -672,6 +698,18 @@ inadvertance.
 `EMAIL_ENABLED=False` est un coupe-circuit distinct : le code s'exécute
 normalement et journalise ce qui *aurait* été envoyé. À utiliser dès qu'on
 travaille sur une copie de la base de production.
+
+**`BASE_URL` et `EMAIL_ASSETS_URL` ne désignent pas la même machine.** Le
+premier est le front — c'est lui que suivent les membres depuis un courriel
+(`/dashboard`, `/login`). Le second est le backend, qui sert les images. Les
+confondre donne soit des liens morts, soit des images absentes.
+
+**Où sont lus les réglages.** `decouple` remonte l'arborescence en cherchant un
+fichier nommé `.env` : livré à lui-même, il trouve celui de la RACINE du dépôt
+et ignore `core/.env.local`. En conteneur l'illusion tenait — docker-compose
+injecte le fichier par `env_file:` — mais en local, aucun réglage n'arrivait.
+`settings.py` charge donc `core/.env.local` explicitement, l'environnement
+gardant la priorité.
 
 ## Gmail : mot de passe d'application obligatoire
 

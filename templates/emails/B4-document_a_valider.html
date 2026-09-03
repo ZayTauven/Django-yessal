@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="supported-color-schemes" content="light dark">
+<title>Un document attend votre validation</title>
+<!-- Yessal Gui · courriel « document_a_valider » · objet défini dans core/mail.py : SUJETS['document_a_valider'] · COURRIEL INTERNE (administrateurs / collecteurs) -->
+<!--[if mso]>
+<style>body,table,td,a{font-family:Arial,Helvetica,sans-serif !important}</style>
+<![endif]-->
+<style>
+  @media only screen and (max-width:620px){
+    .sc-pad{padding-left:26px !important;padding-right:26px !important}
+    .sc-h1{font-size:24px !important;line-height:32px !important}
+  }
+</style>
+</head>
+<body style="margin:0;padding:0;background-color:#eeeef6;">
+<span style="display:none;font-size:1px;color:#eeeef6;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">{{ membre }} ({{ daara }}) a déposé un {{ type_document }}.</span>
+
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#eeeef6;">
+<tr><td align="center" style="padding:28px 12px 44px 12px;">
+
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px;max-width:600px;background-color:#ffffff;">
+
+    <tr><td bgcolor="#4a3fd4" style="background-color:#4a3fd4;padding:0;">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;">
+      <tr>
+        <td class="sc-pad" style="padding:26px 36px 26px 36px;font-family:Arial,Helvetica,sans-serif;font-size:17px;line-height:24px;font-weight:bold;color:#ffffff;letter-spacing:.02em;">
+          Yessal&nbsp;Gui
+        </td>
+        <td align="right" class="sc-pad" style="padding:26px 36px 26px 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:24px;color:#c3bdf7;letter-spacing:.08em;text-transform:uppercase;">
+          Interne · Documents
+        </td>
+      </tr>
+      </table>
+    </td></tr>
+    <tr><td height="4" bgcolor="#c3bdf7" style="height:4px;line-height:4px;font-size:0;background-color:#c3bdf7;">&nbsp;</td></tr>
+
+    <tr><td class="sc-pad" style="padding:40px 36px 0 36px;">
+      <!-- ILLUSTRATION — remplacer le src relatif par une URL https absolue avant envoi. Source : planche « notifications », ligne 2 · colonne 1 -->
+      <img src="{{ illustrations }}/presse-papiers.png"
+           width="112" height="112" alt="Un formulaire déposé dans une enveloppe"
+           style="display:block;width:112px;height:112px;border:0;outline:none;text-decoration:none;">
+    </td></tr>
+
+    <tr><td class="sc-pad sc-h1" style="padding:22px 36px 0 36px;font-family:Arial,Helvetica,sans-serif;font-size:27px;line-height:36px;font-weight:bold;color:#171630;mso-line-height-rule:exactly;">
+      Un document attend votre validation
+    </td></tr>
+
+    <tr><td class="sc-pad" style="padding:20px 36px 0 36px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:27px;color:#494764;mso-line-height-rule:exactly;">
+      <span style="font-weight:bold;color:#171630;">{{ membre }}</span> ({{ daara }}) a déposé un {{ type_document }}.
+    </td></tr>
+    <tr><td class="sc-pad" style="padding:16px 36px 0 36px;">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;">
+      <tr>
+        <td width="40%" style="width:40%;padding:13px 12px 13px 0;border-bottom:1px solid #ecebf5;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:21px;color:#8582a6;">Membre</td>
+        <td width="60%" align="right" style="width:60%;padding:13px 0;border-bottom:1px solid #ecebf5;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:21px;font-weight:bold;color:#171630;word-break:break-all;">{{ membre }}</td>
+      </tr>
+      <tr>
+        <td width="40%" style="width:40%;padding:13px 12px 13px 0;border-bottom:1px solid #ecebf5;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:21px;color:#8582a6;">Daara</td>
+        <td width="60%" align="right" style="width:60%;padding:13px 0;border-bottom:1px solid #ecebf5;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:21px;font-weight:bold;color:#171630;word-break:break-all;">{{ daara }}</td>
+      </tr>
+      <tr>
+        <td width="40%" style="width:40%;padding:13px 12px 13px 0;border-bottom:1px solid #ecebf5;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:21px;color:#8582a6;">Type de document</td>
+        <td width="60%" align="right" style="width:60%;padding:13px 0;border-bottom:1px solid #ecebf5;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:21px;font-weight:bold;color:#171630;word-break:break-all;">{{ type_document }}</td>
+      </tr>
+      </table>
+    </td></tr>
+    <tr><td class="sc-pad" style="padding:28px 36px 0 36px;">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+      <tr><td align="center" bgcolor="#4a3fd4" style="border-radius:6px;">
+        <a href="{{ base_url }}/dashboard/admin/pilotage" style="display:block;padding:15px 34px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:20px;font-weight:bold;color:#ffffff;text-decoration:none;border-radius:6px;">
+          Examiner le document
+        </a>
+      </td></tr>
+      </table>
+    </td></tr>
+    <tr><td style="padding:0 0 40px 0;font-size:0;line-height:0;">&nbsp;</td></tr>
+
+    <tr><td bgcolor="#f7f7fc" class="sc-pad" style="background-color:#f7f7fc;padding:24px 36px 26px 36px;border-top:1px solid #e7e6f2;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:20px;color:#8582a6;">
+      Courriel interne, adressé aux personnes habilitées de Yessal&nbsp;Gui.<br>
+      <a href="{{ base_url }}/dashboard/profile" style="color:#4a3fd4;text-decoration:underline;">Gérer mes préférences de courriel</a>
+      &nbsp;·&nbsp;
+      <a href="{{ base_url }}" style="color:#4a3fd4;text-decoration:underline;">yessalgui.sn</a><br>
+      <span style="color:#a3a0bb;">© {{ annee }} Yessal Gui — Touba, Sénégal</span>
+    </td></tr>
+
+  </table>
+
+</td></tr>
+</table>
+</body>
+</html>
