@@ -36,6 +36,7 @@ from .serializers import (
 )
 from .notify import nom_de, notify, notify_many
 from .services import can_invite, get_effective_config, pusher_client
+from core.phone import phone_digits
 
 User = get_user_model()
 
@@ -382,12 +383,22 @@ class MemberSearchView(APIView):
         users_qs = User.objects.filter(is_active=True).exclude(role=User.Role.ADMIN).exclude(id=request.user.id)
 
         # Recherche textuelle sur le nom complet, email, ou téléphone
-        users_qs = users_qs.filter(
+        recherche = (
             Q(first_name__icontains=query) |
             Q(last_name__icontains=query) |
             Q(email__icontains=query) |
             Q(phone__icontains=query)
         )
+
+        # Les numéros sont stockés en E.164, sans séparateur : « 77-000-00-00 »
+        # ne rencontrait jamais « +221770000000 ». On ajoute donc le fragment
+        # débarrassé de ses espaces et de ses tirets — en PLUS de la saisie
+        # brute, qui reste utile pour un nom.
+        chiffres = phone_digits(query)
+        if chiffres:
+            recherche |= Q(phone__icontains=chiffres)
+
+        users_qs = users_qs.filter(recherche)
 
         user_daara = getattr(request.user, 'daara', None)
 

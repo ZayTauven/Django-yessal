@@ -490,6 +490,20 @@ if not FIREBASE_CREDENTIALS_PATH.exists() and _firebase_credentials_fallback.exi
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Téléphone — l'indicatif prêté à un numéro saisi sans le sien
+# ═══════════════════════════════════════════════════════════════════════════
+# Les numéros sont stockés en E.164 (« +221770000000 ») : c'est la seule forme
+# qui permette de retrouver à la connexion le compte créé à l'inscription, quel
+# que soit l'espacement de la saisie. Voir `core.phone`.
+#
+# Ce réglage ne dit PAS « les membres sont sénégalais ». Une grande partie
+# d'entre eux vit à l'étranger, et un numéro portant son propre indicatif le
+# garde. Il ne sert qu'aux saisies en national — « 77 000 00 00 » —, qui
+# viennent de gens qui composent depuis le Sénégal.
+DEFAULT_PHONE_REGION = config('DEFAULT_PHONE_REGION', default='+221')
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Téléversements — plafond explicite
 # ═══════════════════════════════════════════════════════════════════════════
 # Il n'existait aucune limite applicative : Django gardait ses valeurs par

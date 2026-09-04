@@ -1,8 +1,13 @@
-﻿from django.db import models
+﻿import logging
+
+from django.db import models
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
+from core.phone import normalize_phone
 from core.validators import downscale_image, validate_upload_size
+
+logger = logging.getLogger(__name__)
 
 
 class CustomUserManager(BaseUserManager):
@@ -205,7 +210,39 @@ class User(AbstractUser):
 
     def save(self, *args, **kwargs):
         self.email = (self.email or '').strip() or None
-        self.phone = (self.phone or '').strip() or None
+
+        # ═══════════════════════════════════════════════════════════════════
+        # Le numéro entre en base sous une seule forme : E.164
+        # ═══════════════════════════════════════════════════════════════════
+        # Un `.strip()` ne suffisait pas. Le formulaire d'inscription proposait
+        # « +221 77 000 00 00 », espaces compris, quand l'écran de connexion
+        # émettait « +221770000000 » : la recherche par téléphone est exacte,
+        # et ces deux chaînes ne se rencontraient jamais. Le compte existait,
+        # son propriétaire ne pouvait pas y entrer.
+        #
+        # C'est le FILET DE SÉCURITÉ, pas le contrôle principal : les
+        # sérialiseurs normalisent déjà, et eux savent rendre l'erreur lisible
+        # (voir `accounts.serializers.PhoneField`). Ici, on rattrape les
+        # écritures qui passent directement par l'ORM — commande de gestion,
+        # shell, script d'amorçage.
+        #
+        # Une valeur inexploitable est CONSERVÉE telle quelle plutôt que de
+        # faire échouer l'écriture. Lever ici casserait des enregistrements qui
+        # n'ont rien à voir avec le téléphone : `revoke_sessions()` ou la mise à
+        # jour de `last_login` passent par ce `save()`, et une ligne héritée que
+        # la migration 0013 n'a pas su traiter empêcherait alors son
+        # propriétaire de se connecter. L'avertissement, lui, part au journal.
+        if self.phone:
+            try:
+                self.phone = normalize_phone(self.phone)
+            except ValidationError:
+                logger.warning(
+                    "Numéro non normalisable conservé tel quel sur le compte "
+                    "%s : %r", self.pk or '(nouveau)', self.phone,
+                )
+                self.phone = self.phone.strip() or None
+        else:
+            self.phone = None
 
         # Réduction à la source : le plafond de 15 Mo dit ce qu'on accepte,
         # pas ce qu'on doit réservir à chaque visiteur. Voir

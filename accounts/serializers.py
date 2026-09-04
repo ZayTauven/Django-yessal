@@ -2,6 +2,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.db.models import Q
 from rest_framework import serializers
+from rest_framework.validators import UniqueValidator
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import (
@@ -17,6 +18,7 @@ from .models import (
 from .authentication import TOKEN_VERSION_CLAIM
 
 from core.mail import send_to_user
+from core.phone import looks_like_phone, normalize_phone, normalize_phone_quietly
 
 User = get_user_model()
 
@@ -43,6 +45,65 @@ def _auteur_de(serializer) -> str:
         return "Un administrateur"
     nom = (auteur.get_full_name() or '').strip()
     return nom or auteur.email or "Un administrateur"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Le numéro de téléphone en entrée
+# ═══════════════════════════════════════════════════════════════════════════
+# Le modèle normalise aussi, en filet de sécurité (voir `User.save()`). Mais
+# c'est ICI que ça doit se jouer : le sérialiseur est le seul endroit qui sache
+# répondre « ce numéro est déjà associé à un compte » plutôt que renvoyer une
+# 500 sur une violation de contrainte.
+
+
+class PhoneField(serializers.CharField):
+    """Champ de saisie d'un numéro, ramené en E.164 avant toute vérification.
+
+    Le MOMENT compte, et c'est pourquoi ce n'est pas un `validate_phone()` :
+    DRF applique les validateurs du champ — dont l'unicité — sur ce que renvoie
+    `to_internal_value`, alors qu'un `validate_phone()` ne passerait qu'après.
+    Normaliser ici, c'est vérifier l'unicité sur la forme RÉELLEMENT écrite en
+    base. Sinon « +221 77 000 00 00 » et « +221770000000 » franchissaient tous
+    deux le contrôle d'unicité, puis se heurtaient à l'INSERT : une erreur 500
+    au lieu d'un message.
+    """
+
+    def run_validation(self, data=serializers.empty):
+        # Une chaîne vide vaut « pas de numéro ». On la ramène à None AVANT le
+        # traitement des valeurs vides par DRF, pour que les validateurs soient
+        # sautés : `phone IS NULL` correspond à TOUTES les lignes sans numéro,
+        # et le contrôle d'unicité aurait crié au doublon dès le deuxième
+        # compte créé avec une adresse seule.
+        if isinstance(data, str) and not data.strip():
+            data = None
+        return super().run_validation(data)
+
+    def to_internal_value(self, data):
+        # `normalize_phone` lève la ValidationError de Django ; DRF la traduit
+        # en 400 rattachée à ce champ.
+        return normalize_phone(super().to_internal_value(data))
+
+
+def _champ_telephone(**kwargs):
+    """Le champ `phone` des sérialiseurs d'écriture, unicité comprise.
+
+    DRF n'ajoute ses validateurs automatiques qu'aux champs qu'il DÉDUIT du
+    modèle : un champ déclaré à la main perd l'unicité si on ne la redit pas.
+    On la redit donc, une fois, avec un message en français — celui de DRF
+    parle d'un « champ » et d'un « objet ».
+    """
+    kwargs.setdefault('required', False)
+    kwargs.setdefault('allow_null', True)
+    kwargs.setdefault('allow_blank', True)
+    return PhoneField(
+        validators=[
+            UniqueValidator(
+                queryset=User.objects.all(),
+                message="Ce numéro de téléphone est déjà associé à un compte.",
+            )
+        ],
+        **kwargs,
+    )
 
 
 class PilotageSettingsSerializer(serializers.ModelSerializer):
@@ -255,6 +316,7 @@ class UserDocumentValidationSerializer(serializers.ModelSerializer):
 class UserSerializer(serializers.ModelSerializer):
     avatar = serializers.SerializerMethodField()
     avatar_url = serializers.SerializerMethodField()
+    phone = _champ_telephone()
     daara = DaaraSerializer(read_only=True)
     daara_id = serializers.PrimaryKeyRelatedField(
         queryset=Daara.objects.all(),
@@ -364,6 +426,8 @@ class UserSerializer(serializers.ModelSerializer):
 
 
 class ProfileUpdateSerializer(serializers.ModelSerializer):
+    phone = _champ_telephone()
+
     class Meta:
         model = User
         fields = [
@@ -376,6 +440,7 @@ class ProfileUpdateSerializer(serializers.ModelSerializer):
 
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, style={'input_type': 'password'})
+    phone = _champ_telephone()
     daara_id = serializers.PrimaryKeyRelatedField(
         queryset=Daara.objects.filter(is_active=True),
         source='daara',
@@ -388,13 +453,15 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         email = (attrs.get('email') or '').strip()
-        phone = (attrs.get('phone') or '').strip()
+        # Le numéro est déjà en E.164, ou déjà None : `PhoneField` s'en est
+        # chargé avant d'arriver ici, sans quoi la demande aurait été refusée.
+        phone = attrs.get('phone')
         if not email and not phone:
             raise serializers.ValidationError({
                 'identifier': "Un email ou un numéro de téléphone est obligatoire.",
             })
         attrs['email'] = email or None
-        attrs['phone'] = phone or None
+        attrs['phone'] = phone
         return attrs
 
     def validate_password(self, value):
@@ -442,7 +509,30 @@ class LoginSerializer(serializers.Serializer):
         if not identifier or not password:
             raise serializers.ValidationError("Identifiant et mot de passe requis.")
 
-        user = User.objects.filter(Q(email__iexact=identifier) | Q(phone=identifier)).first()
+        # ═══════════════════════════════════════════════════════════════════
+        # Chercher le numéro sous la forme où il est STOCKÉ
+        # ═══════════════════════════════════════════════════════════════════
+        # Le même champ accepte une adresse et un numéro. Une adresse ne passe
+        # surtout pas par le normalisateur : elle en ressortirait défigurée.
+        #
+        # On interroge la base sur la saisie ET sur sa forme normalisée. La
+        # seconde est le cas courant depuis la migration 0013 ; la première
+        # couvre les lignes que cette migration a dû laisser telles quelles,
+        # faute de pouvoir trancher une collision d'unicité à notre place.
+        #
+        # Une saisie que le normalisateur refuse ne lève RIEN ici. Sur un écran
+        # de connexion, dire POURQUOI ça échoue renseigne surtout celui qui
+        # cherche des comptes : on retombe sur « Identifiants invalides », comme
+        # pour un mot de passe faux.
+        telephones = {identifier}
+        if looks_like_phone(identifier):
+            normalise = normalize_phone_quietly(identifier)
+            if normalise:
+                telephones.add(normalise)
+
+        user = User.objects.filter(
+            Q(email__iexact=identifier) | Q(phone__in=telephones)
+        ).first()
         if not user or not user.check_password(password):
             raise serializers.ValidationError("Identifiants invalides.")
 
