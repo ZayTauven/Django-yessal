@@ -28,6 +28,24 @@ def montant_lisible(valeur) -> str:
     return f'{entier:,}'.replace(',', '\u00a0')
 
 
+def _iban_exploitable(iban) -> bool:
+    """Un IBAN sur lequel on peut réellement virer.
+
+    ⚠ Le contrôle « non vide » ne suffit pas. `BANK_IBAN` vaut aujourd'hui
+    « SN28 XXXX XXXX XXXX XXXX XXXX XXX » — le gabarit d'exemple, hérité des
+    valeurs de repli du tableau de bord. Servi tel quel, il s'affiche comme une
+    donnée véritable : un membre debout devant son guichet recopierait des X.
+
+    Un gabarit non rempli est PIRE qu'une absence, parce qu'il a l'air d'une
+    réponse. On exige donc de la substance : au moins dix chiffres, ce qu'aucun
+    gabarit n'a et qu'aucun IBAN réel n'a en dessous (le format sénégalais en
+    porte vingt-quatre après « SN »).
+    """
+    if not iban:
+        return False
+    return sum(c.isdigit() for c in str(iban)) >= 10
+
+
 class DonationArchiveSerializerMixin:
     def _archive_serializer(self, archive):
         return {
@@ -117,6 +135,40 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
             'campagne': donation.campaign.name if donation.campaign else '',
             'mode_paiement': donation.get_payment_method_display(),
             'statut': donation.get_payment_status_display(),
+        })
+
+    @action(detail=False, methods=['get'], url_path='bank-account')
+    def bank_account(self, request):
+        """Les coordonnées du compte à créditer par virement.
+
+        Elles n'existaient nulle part en lecture : Django ne les envoyait que
+        dans le courriel `virement_instructions`, déclenché APRÈS la
+        déclaration, et le tableau de bord les relisait dans ses propres
+        variables d'environnement Next. Le mobile n'avait donc aucune source —
+        il demandait la référence d'un virement dont il n'avait jamais montré
+        la destination, et un membre sans adresse e-mail ne pouvait l'obtenir
+        par aucun chemin.
+
+        Réservé aux membres authentifiés : un IBAN d'association n'est pas un
+        secret, mais il n'a rien à faire sur une route ouverte — c'est
+        exactement la donnée qu'on recopie dans une fausse page de collecte.
+
+        Renvoie 503 plutôt qu'un objet de chaînes vides quand la configuration
+        manque. Afficher « IBAN : » suivi de rien conduit un membre à virer sur
+        un compte qu'il aura deviné.
+        """
+        banque = getattr(settings, 'BANK_ACCOUNT', {}) or {}
+        if not _iban_exploitable(banque.get('iban')) or not banque.get('account_name'):
+            return Response(
+                {'detail': "Les coordonnées bancaires ne sont pas configurées."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response({
+            'bank_name': banque.get('bank_name', ''),
+            'iban': banque.get('iban', ''),
+            'bic': banque.get('bic', ''),
+            'account_name': banque.get('account_name', ''),
+            'reference_format': banque.get('reference_format', ''),
         })
 
     @action(detail=True, methods=['post'])
