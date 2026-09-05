@@ -24,6 +24,19 @@ class CampaignSerializer(serializers.ModelSerializer):
     todos = serializers.SerializerMethodField()
     organizer_name = serializers.SerializerMethodField()
     organizer_role = serializers.CharField(source='organizer.role', read_only=True)
+    # Le NOM du Daara et celui de la fête, en plus de leurs clés.
+    #
+    # Le mobile les lisait depuis toujours — sur-titre de la photographie d'un
+    # Ndiguel, sous-titre de son organisateur — et recevait `null` à chaque
+    # fois : `Meta.fields` ne servait que `daara` et `fete`, deux entiers. Un
+    # écran ne peut pas afficher « Daara de 3 ».
+    #
+    # `allow_null` parce que les deux relations sont facultatives sur le modèle
+    # (`SET_NULL`, `blank=True`) : sans lui, DRF refuserait un Ndiguel sans
+    # Daara. Ajout PUREMENT additif — aucun champ retiré, aucun renommé, donc
+    # rien à reprendre côté `front-web`.
+    daara_name = serializers.CharField(source='daara.name', read_only=True, allow_null=True)
+    fete_name = serializers.CharField(source='fete.name', read_only=True, allow_null=True)
     effective_status = serializers.SerializerMethodField()
     is_manageable = serializers.SerializerMethodField()
     days_remaining = serializers.SerializerMethodField()
@@ -41,7 +54,9 @@ class CampaignSerializer(serializers.ModelSerializer):
             'status',
             'effective_status',
             'fete',
+            'fete_name',
             'daara',
+            'daara_name',
             'organizer',
             'organizer_name',
             'organizer_role',

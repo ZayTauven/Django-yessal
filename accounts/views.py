@@ -214,6 +214,32 @@ class DaaraViewSet(viewsets.ModelViewSet):
     serializer_class = DaaraSerializer
     queryset = Daara.objects.all()
 
+    def get_queryset(self):
+        """Un visiteur anonyme ne se voit proposer que les Daaras ACTIFS.
+
+        Le formulaire d'inscription mobile filtrait lui-même sur `is_active`.
+        Deux fautes opposées s'y annulaient mal :
+
+          · `PublicDaaraSerializer` n'envoie pas ce champ (trois champs
+            seulement : id, name, ldd). Côté mobile `is_active` valait donc
+            `undefined`, le filtre vidait la liste, et l'écran affichait
+            « Aucun Daara actif trouvé pour cette localité » quel que soit le
+            contenu de la base. **Personne ne pouvait s'inscrire.**
+          · Et si le champ avait été envoyé, la liste anonyme aurait tout de
+            même proposé les Daaras désactivés, puisque rien ne les écartait
+            ici.
+
+        Le tri appartient au serveur : c'est lui qui sait ce qu'un Daara
+        désactivé signifie, et c'est la seule place où la règle ne peut pas
+        être contournée par un client. Les écrans internes, eux, continuent de
+        voir tous les Daaras — un administrateur doit pouvoir rouvrir ce qu'il
+        a fermé.
+        """
+        queryset = super().get_queryset()
+        if self.action in {'list', 'retrieve'} and not self.request.user.is_authenticated:
+            return queryset.filter(is_active=True)
+        return queryset
+
     def get_serializer_class(self):
         """
         Un visiteur non authentifié reçoit la version réduite.
