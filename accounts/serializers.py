@@ -441,6 +441,32 @@ class ProfileUpdateSerializer(serializers.ModelSerializer):
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, style={'input_type': 'password'})
     phone = _champ_telephone()
+    # ═══════════════════════════════════════════════════════════════════════
+    # Le message d'unicité de l'adresse, écrit pour un membre
+    # ═══════════════════════════════════════════════════════════════════════
+    # DRF reprenait celui du modèle : « Un objet user avec ce champ adresse
+    # électronique existe déjà. » Cette phrase parle d'un « objet user » à
+    # quelqu'un qui essaie de rejoindre son Daara, et elle ne dit pas quoi
+    # faire — alors que ce cas a une suite évidente : se connecter, ou
+    # récupérer son mot de passe.
+    #
+    # ⚠ `Meta.extra_kwargs = {'email': {'error_messages': {'unique': …}}}` NE
+    # FONCTIONNE PAS : DRF construit le `UniqueValidator` à partir des
+    # `error_messages` du champ de MODÈLE, pas de ceux du sérialiseur. Il faut
+    # donc déclarer le champ et porter le validateur soi-même — exactement ce
+    # que `_champ_telephone()` fait pour le numéro depuis toujours.
+    email = serializers.EmailField(
+        required=False,
+        allow_null=True,
+        allow_blank=True,
+        validators=[
+            UniqueValidator(
+                queryset=User.objects.all(),
+                message="Un compte existe déjà avec cette adresse e-mail. "
+                        "Connectez-vous, ou utilisez « Mot de passe oublié ».",
+            )
+        ],
+    )
     daara_id = serializers.PrimaryKeyRelatedField(
         queryset=Daara.objects.filter(is_active=True),
         source='daara',
@@ -450,6 +476,39 @@ class RegisterSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['email', 'phone', 'password', 'first_name', 'last_name', 'daara_id']
+        # ═══════════════════════════════════════════════════════════════════
+        # ═══════════════════════════════════════════════════════════════════
+        # Le prénom et le nom sont OBLIGATOIRES à l'inscription
+        # ═══════════════════════════════════════════════════════════════════
+        # `User.first_name` est `blank=True` sur le modèle — l'administration
+        # doit pouvoir créer une fiche incomplète. DRF en déduisait donc un
+        # champ facultatif, et `POST /auth/register/` acceptait un prénom vide :
+        # vérifié le 2026-09-05, réponse 201, compte créé, courriel de
+        # bienvenue envoyé à quelqu'un qui n'a pas de nom.
+        #
+        # Le formulaire mobile l'exigeait déjà (`zod .min(1)`), l'API non : la
+        # règle ne tenait que par le client, c'est-à-dire pas du tout.
+        #
+        # Le message nomme le champ. Le bandeau d'erreur du mobile n'en montre
+        # qu'un à la fois — « Ce champ ne peut être vide » n'y dit pas lequel.
+        extra_kwargs = {
+            'first_name': {
+                'required': True,
+                'allow_blank': False,
+                'error_messages': {
+                    'blank': "Le prénom est obligatoire.",
+                    'required': "Le prénom est obligatoire.",
+                },
+            },
+            'last_name': {
+                'required': True,
+                'allow_blank': False,
+                'error_messages': {
+                    'blank': "Le nom est obligatoire.",
+                    'required': "Le nom est obligatoire.",
+                },
+            },
+        }
 
     def validate(self, attrs):
         email = (attrs.get('email') or '').strip()

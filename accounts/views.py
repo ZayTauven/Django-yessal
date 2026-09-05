@@ -215,10 +215,31 @@ class DaaraViewSet(viewsets.ModelViewSet):
     queryset = Daara.objects.all()
 
     def get_queryset(self):
-        """Un visiteur anonyme ne se voit proposer que les Daaras ACTIFS.
+        """La liste des Daaras : filtrée par LDD, et réduite aux actifs si anonyme.
 
-        Le formulaire d'inscription mobile filtrait lui-même sur `is_active`.
-        Deux fautes opposées s'y annulaient mal :
+        ⚠ CETTE MÉTHODE ÉTAIT ÉCRITE DEUX FOIS DANS CETTE CLASSE. Une seconde
+        définition, cent lignes plus bas, écrasait silencieusement celle-ci :
+        en Python, la dernière l'emporte. Tout ce docstring décrivait donc du
+        code mort, et une correction apportée ici n'aurait rien changé. Les
+        deux sont fusionnées.
+
+        ── Le filtre par LDD ──────────────────────────────────────────────────
+        Le formulaire d'inscription appelle `/api/daara/?ldd_id=<n>` depuis
+        toujours. **Le paramètre n'était lu nulle part** : ni `filter_backends`,
+        ni `filterset_fields`, ni ici. Un membre qui choisissait sa localité se
+        voyait proposer les 376 Daaras de la confrérie au lieu des cinq de sa
+        zone, et pouvait donc rattacher son compte à un Daara de l'autre bout du
+        pays sans que rien ne le signale.
+
+        Un `ldd_id` illisible ou inconnu ne rend RIEN plutôt que tout : sur un
+        sélecteur en cascade, une liste vide se voit et se corrige, alors qu'une
+        liste complète passe pour un résultat.
+
+        ── Les Daaras désactivés ──────────────────────────────────────────────
+        Un visiteur anonyme ne se voit proposer que les Daaras ACTIFS.
+
+        Le formulaire mobile filtrait lui-même sur `is_active`, et deux fautes
+        opposées s'y annulaient mal :
 
           · `PublicDaaraSerializer` n'envoie pas ce champ (trois champs
             seulement : id, name, ldd). Côté mobile `is_active` valait donc
@@ -235,8 +256,16 @@ class DaaraViewSet(viewsets.ModelViewSet):
         voir tous les Daaras — un administrateur doit pouvoir rouvrir ce qu'il
         a fermé.
         """
-        queryset = super().get_queryset()
-        if self.action in {'list', 'retrieve'} and not self.request.user.is_authenticated:
+        queryset = super().get_queryset().annotate(members_count=Count('members'))
+
+        ldd_id = self.request.query_params.get('ldd_id')
+        if ldd_id is not None:
+            try:
+                queryset = queryset.filter(ldd_id=int(ldd_id))
+            except (TypeError, ValueError):
+                return queryset.none()
+
+        if not self.request.user.is_authenticated:
             return queryset.filter(is_active=True)
         return queryset
 
@@ -276,12 +305,6 @@ class DaaraViewSet(viewsets.ModelViewSet):
             is_active=data.get('is_active', True),
         )
         return Response(DaaraSerializer(daara).data, status=status.HTTP_201_CREATED)
-
-    def get_queryset(self):
-        qs = super().get_queryset().annotate(members_count=Count('members'))
-        if self.request.user.is_authenticated:
-            return qs
-        return qs.filter(is_active=True)
 
     @action(detail=True, methods=['get'], url_path='etat', permission_classes=[permissions.IsAdminUser])
     def etat(self, request, pk=None):

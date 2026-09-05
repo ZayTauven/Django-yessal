@@ -305,3 +305,155 @@ class DocumentValidationTests(APITestCase):
         doc.refresh_from_db()
         self.assertEqual(doc.status, UserDocument.ValidationStatus.REJECTED)
         self.assertEqual(doc.rejection_note, 'Document insuffisamment lisible')
+
+
+class DaaraListFilterTests(APITestCase):
+    """La liste des Daaras servie au formulaire d'inscription.
+
+    Deux défauts trouvés le 2026-09-05, tous deux invisibles à la lecture :
+
+      · `?ldd_id=` n'était lu NULLE PART — ni `filter_backends`, ni
+        `filterset_fields`, ni `get_queryset`. Choisir sa localité renvoyait les
+        376 Daaras de la confrérie au lieu des cinq de la zone, et un membre
+        pouvait rattacher son compte à un Daara de l'autre bout du pays.
+      · `get_queryset` était DÉFINIE DEUX FOIS dans `DaaraViewSet` : la seconde
+        écrasait silencieusement la première, dont le docstring décrivait donc
+        du code mort.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.ldd_a = LDD.objects.create(code='DS S1', name='Zone A')
+        self.ldd_b = LDD.objects.create(code='DS S2', name='Zone B')
+        self.a1 = Daara.objects.create(name='Daara A1', ldd=self.ldd_a)
+        self.a2 = Daara.objects.create(name='Daara A2', ldd=self.ldd_a)
+        self.ferme = Daara.objects.create(
+            name='Daara A3 fermé', ldd=self.ldd_a, is_active=False
+        )
+        self.b1 = Daara.objects.create(name='Daara B1', ldd=self.ldd_b)
+
+    def _ids(self, response):
+        data = response.data
+        rows = data if isinstance(data, list) else data.get('results', [])
+        return {row['id'] for row in rows}
+
+    def test_filtre_par_ldd(self):
+        """Seuls les Daaras de la LDD demandée reviennent."""
+        response = self.client.get('/api/daara/', {'ldd_id': self.ldd_a.id})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self._ids(response), {self.a1.id, self.a2.id})
+
+    def test_aucun_daara_d_une_autre_ldd(self):
+        """C'est le cœur du défaut : un Daara voisin ne doit pas fuiter."""
+        response = self.client.get('/api/daara/', {'ldd_id': self.ldd_b.id})
+        self.assertNotIn(self.a1.id, self._ids(response))
+        self.assertEqual(self._ids(response), {self.b1.id})
+
+    def test_anonyme_ne_voit_pas_les_daaras_fermes(self):
+        response = self.client.get('/api/daara/', {'ldd_id': self.ldd_a.id})
+        self.assertNotIn(self.ferme.id, self._ids(response))
+
+    def test_administrateur_voit_les_daaras_fermes(self):
+        """Un administrateur doit pouvoir rouvrir ce qu'il a fermé."""
+        admin = User.objects.create_user(
+            email='admin@example.com', password='TestPassword123!',
+            role=User.Role.ADMIN, status=User.Status.ACTIVE, is_staff=True,
+        )
+        self.client.force_authenticate(user=admin)
+        response = self.client.get('/api/daara/', {'ldd_id': self.ldd_a.id})
+        self.assertIn(self.ferme.id, self._ids(response))
+
+    def test_ldd_id_illisible_ne_rend_rien(self):
+        """Une liste vide se voit et se corrige ; une liste complète passe pour
+        un résultat."""
+        response = self.client.get('/api/daara/', {'ldd_id': 'abc'})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self._ids(response), set())
+
+    def test_ldd_id_inconnu_ne_rend_rien(self):
+        response = self.client.get('/api/daara/', {'ldd_id': 999999})
+        self.assertEqual(self._ids(response), set())
+
+    def test_sans_ldd_id_la_liste_reste_entiere(self):
+        """Le paramètre est facultatif : sans lui, rien ne change."""
+        response = self.client.get('/api/daara/')
+        self.assertEqual(self._ids(response), {self.a1.id, self.a2.id, self.b1.id})
+
+
+class RegistrationFeedbackTests(APITestCase):
+    """Ce que l'inscription RÉPOND — le retour au membre, pas seulement le compte.
+
+    Trois défauts trouvés le 2026-09-05 en éprouvant le parcours :
+
+      · le message d'unicité de l'adresse était celui du modèle Django (« Un
+        objet user avec ce champ adresse électronique existe déjà »), qui parle
+        d'un « objet user » et ne dit pas quoi faire ;
+      · `first_name` et `last_name` étaient FACULTATIFS côté API — le modèle les
+        déclare `blank=True` pour l'administration, DRF en déduisait un champ
+        optionnel, et un compte pouvait naître sans nom. Seul le formulaire
+        mobile l'empêchait, c'est-à-dire personne ;
+      · le compte est créé en `pending` et rien ne le disait à l'inscrit.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.ldd = LDD.objects.create(code='DS S9', name='Zone test')
+        self.daara = Daara.objects.create(name='Daara test', ldd=self.ldd)
+        self.url = '/api/auth/register/'
+
+    def _payload(self, **overrides):
+        base = {
+            'first_name': 'Awa',
+            'last_name': 'Ndiaye',
+            'email': 'awa@example.com',
+            'password': 'TestPassword123!',
+            'daara_id': self.daara.id,
+        }
+        base.update(overrides)
+        return base
+
+    def test_compte_cree_en_attente_de_validation(self):
+        """L'écran de confirmation promet une validation : elle doit être vraie."""
+        response = self.client.post(self.url, self._payload(), format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        membre = User.objects.get(email='awa@example.com')
+        self.assertEqual(membre.status, User.Status.PENDING)
+        self.assertEqual(membre.daara, self.daara)
+
+    def test_adresse_deja_prise_dit_quoi_faire(self):
+        self.client.post(self.url, self._payload(), format='json')
+        response = self.client.post(self.url, self._payload(), format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        message = response.data['email'][0]
+        self.assertIn('existe déjà', message)
+        self.assertNotIn('objet user', message)
+
+    def test_prenom_vide_refuse(self):
+        response = self.client.post(self.url, self._payload(first_name=''), format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('prénom', response.data['first_name'][0].lower())
+        self.assertFalse(User.objects.filter(email='awa@example.com').exists())
+
+    def test_nom_absent_refuse(self):
+        payload = self._payload()
+        payload.pop('last_name')
+        response = self.client.post(self.url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('nom', response.data['last_name'][0].lower())
+
+    def test_numero_deja_pris_dit_quoi_faire(self):
+        User.objects.create_user(
+            email=None, phone='+221781112233', password='TestPassword123!',
+            first_name='Deja', last_name='La', daara=self.daara,
+        )
+        payload = self._payload(email=None, phone='+221 78 111 22 33')
+        response = self.client.post(self.url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('déjà associé', response.data['phone'][0])
+
+    def test_inscription_par_numero_international(self):
+        """Le sélecteur d'indicatif compose l'E.164 : il doit passer tel quel."""
+        payload = self._payload(email=None, phone='+33612345678')
+        response = self.client.post(self.url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(User.objects.get(last_name='Ndiaye').phone, '+33612345678')
