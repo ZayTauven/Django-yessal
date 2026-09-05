@@ -1,8 +1,9 @@
-from django.db.models import Sum
+﻿from django.db.models import Sum
 from django.utils import timezone
 
 from rest_framework import filters, permissions, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 
 from accounts.models import User
@@ -271,3 +272,33 @@ class CampaignTodoViewSet(viewsets.ModelViewSet):
         if user.role in ['admin', 'chef_daara']:
             return qs
         return qs.filter(campaign__organizer=user, campaign__deadline__gte=timezone.now().date()).exclude(campaign__status__in=['completed', 'inactive'])
+
+    def perform_create(self, serializer):
+        """La création vérifie le Ndiguel VISÉ, et pas seulement le rôle.
+
+        🔴 Ce contrôle n'existait pas. `IsCampaignOrganizer.has_permission`
+        n'examine que le rôle pour l'action `create`, et
+        `has_object_permission` ne s'exécute JAMAIS sur une création — il n'y a
+        pas encore d'objet. Or `CAMPAIGN_CREATOR_ROLES` inclut `member` :
+        n'importe quel talibé pouvait donc écrire une tâche dans le Ndiguel de
+        n'importe qui, y compris d'un autre Daara, et le serveur répondait 201.
+
+        Deux conséquences, constatées le 2026-09-05 en éprouvant le contrat :
+
+          · une écriture non autorisée dans le plan de travail d'autrui, que
+            le responsable légitime voyait apparaître sans savoir d'où ;
+          · une tâche que son propre auteur ne revoyait jamais —
+            `get_queryset` la lui cache aussitôt, et le `PATCH` suivant
+            renvoie 404. Un 201 qui ne laisse rien derrière lui est pire
+            qu'un refus : il fait croire au travail enregistré.
+
+        La règle appliquée est celle qui gouverne déjà la LECTURE des tâches
+        (`CampaignSerializer.get_todos`) : `can_be_managed_by`. L'API refuse
+        désormais ce qu'elle refusait déjà de montrer.
+        """
+        campaign = serializer.validated_data.get('campaign')
+        if campaign and not campaign.can_be_managed_by(self.request.user):
+            raise PermissionDenied(
+                "Vous ne gérez pas ce Ndiguel : vous ne pouvez pas y ajouter de tâche."
+            )
+        serializer.save()
