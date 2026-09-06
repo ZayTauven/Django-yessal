@@ -382,18 +382,42 @@ class MemberSearchView(APIView):
         # Commencer par filtrer les membres actifs (hors admin)
         users_qs = User.objects.filter(is_active=True).exclude(role=User.Role.ADMIN).exclude(id=request.user.id)
 
-        # Recherche textuelle sur le nom complet, email, ou téléphone
-        recherche = (
-            Q(first_name__icontains=query) |
-            Q(last_name__icontains=query) |
-            Q(email__icontains=query) |
-            Q(phone__icontains=query)
-        )
+        # ═══════════════════════════════════════════════════════════════════
+        # La recherche porte sur le nom COMPLET, mot par mot
+        # ═══════════════════════════════════════════════════════════════════
+        # La docstring l'annonçait déjà ; le code ne le faisait pas. Il
+        # comparait la saisie ENTIÈRE à chaque champ pris isolément, si bien
+        # que « Papice Cisse » ne rencontrait ni `first_name` ni `last_name` —
+        # aucun des deux ne contient l'espace. Chercher quelqu'un par son nom
+        # complet, le geste le plus naturel qui soit, ne rendait RIEN, sans le
+        # moindre indice : l'écran affichait « Personne ne correspond », et le
+        # membre en concluait que l'autre n'est pas inscrit.
+        #
+        # Chaque mot doit désormais toucher AU MOINS UN champ, et TOUS les
+        # mots doivent toucher : « Papice » au prénom, « Cisse » au nom. Une
+        # recherche à un seul mot se comporte exactement comme avant.
+        def filtre_mot(mot):
+            f = (
+                Q(first_name__icontains=mot) |
+                Q(last_name__icontains=mot) |
+                Q(email__icontains=mot) |
+                Q(phone__icontains=mot)
+            )
+            chiffres_mot = phone_digits(mot)
+            if chiffres_mot:
+                f |= Q(phone__icontains=chiffres_mot)
+            return f
+
+        mots = query.split()
+        recherche = filtre_mot(mots[0])
+        for mot in mots[1:]:
+            recherche &= filtre_mot(mot)
 
         # Les numéros sont stockés en E.164, sans séparateur : « 77-000-00-00 »
-        # ne rencontrait jamais « +221770000000 ». On ajoute donc le fragment
-        # débarrassé de ses espaces et de ses tirets — en PLUS de la saisie
-        # brute, qui reste utile pour un nom.
+        # ne rencontrait jamais « +221770000000 ». Le fragment débarrassé de
+        # ses espaces et de ses tirets reste testé sur la saisie ENTIÈRE, en
+        # PLUS du découpage ci-dessus — sinon un numéro saisi avec des espaces
+        # se retrouverait éclaté en morceaux trop courts pour discriminer.
         chiffres = phone_digits(query)
         if chiffres:
             recherche |= Q(phone__icontains=chiffres)
