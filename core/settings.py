@@ -39,7 +39,10 @@ config = Config(RepositoryEnv(_ENV_LOCAL)) if _ENV_LOCAL.is_file() else _auto_co
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
-FIREBASE_SERVICE_ACCOUNT_FILENAME = 'yessal-gui-6d7e0-firebase-adminsdk-fbsvc-35ea30d759.json'
+# Nom STABLE, volontairement détaché du projet Firebase : la clé téléchargée
+# depuis la console s'appelle « <projet>-firebase-adminsdk-….json », et porter
+# ce nom jusqu'ici lie la configuration à un projet qu'on peut recréer.
+FIREBASE_SERVICE_ACCOUNT_FILENAME = 'firebase-sa.json'
 
 
 # Quick-start development settings - unsuitable for production

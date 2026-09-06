@@ -1,4 +1,8 @@
+import logging
+
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 try:
     import pusher
@@ -78,7 +82,12 @@ def send_fcm_push(user_id: int, title: str, body: str, data: dict | None = None)
         if invalid_tokens:
             FCMToken.objects.filter(token__in=invalid_tokens).delete()
     except Exception:
-        pass  # Never block the main flow
+        # On n'interrompt JAMAIS le flux principal pour un push. Mais on ne le
+        # TAIT plus : c'est ce silence qui a laissé passer un montage Docker
+        # cassé — la clé de service manquait, chaque envoi levait, et rien
+        # nulle part ne le disait. Un push qui échoue en silence est pire
+        # qu'un push absent : on croit la fonction livrée.
+        logger.exception("Envoi FCM impossible pour l'utilisateur %s", user_id)
 
 
 def get_effective_config(user):

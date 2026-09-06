@@ -20,7 +20,10 @@ services:
     volumes:
       - .:/app
       - media_data:/app/media
-      - ../AGENTS/firebase/yessal-gui-6d7e0-firebase-adminsdk-fbsvc-35ea30d759.json:/run/secrets/firebase/firebase-sa.json:ro
+      # Le dossier, jamais le fichier : un bind-mount vers un chemin absent
+      # ne fait pas échouer Docker, il CRÉE un répertoire vide à cet endroit.
+      # C'est ce qui a fait taire le push quand le projet Firebase a changé.
+      - ../AGENTS/firebase:/run/secrets/firebase:ro
     ports:
       - "8000:8000"
     depends_on:
