@@ -16,15 +16,38 @@ from .models import Campaign, CampaignTodo, Fete
 from .serializers import CampaignSerializer, CampaignTodoSerializer, FeteSerializer
 
 
-# Rôles autorisés à créer / gérer des campagnes
-CAMPAIGN_CREATOR_ROLES = ('admin', 'chef_daara', 'collector', 'member')
+# ═══════════════════════════════════════════════════════════════════════════
+# Qui peut LANCER un Ndiguel
+# ═══════════════════════════════════════════════════════════════════════════
+# 🔴 CORRIGÉ LE 2026-09-06. La liste valait
+# `('admin', 'chef_daara', 'collector', 'member')` : n'importe quel talibé
+# pouvait ouvrir un appel aux dons au nom de la confrérie.
+#
+# La règle métier ne l'a jamais permis. `AGENTS/tools/05_use_cases_regles.md`,
+# UC-06 « Création d'une campagne de dons » ne porte qu'un acteur —
+# **Administrateur** — et `01_vision_produit.md` attribue au chef de Daara la
+# gestion de son Daara, la proposition de collecteurs et la création de salons,
+# jamais la création de campagnes.
+#
+# Le tableau de bord tenait déjà la règle : `CampaignsClient.tsx` n'affiche
+# « Lancer un Ndiguel » que derrière `isAdmin`. L'écart était donc invisible en
+# usage normal — l'API acceptait ce que l'interface ne proposait pas. C'est le
+# pire des deux mondes : une règle tenue par l'écran, pas par le serveur.
+#
+# ⚠ Ne pas rouvrir cette liste sans rouvrir UC-06. Un appel aux dons engage la
+# confrérie auprès de ses membres ; ce n'est pas une ressource qu'on crée.
+CAMPAIGN_CREATOR_ROLES = ('admin',)
 
 
 class IsCampaignOrganizer(permissions.BasePermission):
     """
     - GET (liste/détail) : ouvert à tous les utilisateurs authentifiés.
-    - POST (création)    : réservé aux rôles actifs de la confrérie (pas tutelle).
+    - POST (création)    : **administrateur seul** (UC-06).
     - PUT/PATCH/DELETE   : réservé à l'organisateur désigné ou admin/chef_daara.
+
+    ⚠ La nuance du dernier point est VOULUE et confirmée par le commanditaire :
+    un chef de Daara suit l'avancement des tâches d'un Ndiguel même s'il n'en
+    est pas l'organisateur. Voir `Campaign.can_be_managed_by`.
     """
 
     def has_permission(self, request, view):

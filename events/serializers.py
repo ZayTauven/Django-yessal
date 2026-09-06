@@ -37,6 +37,25 @@ class CampaignSerializer(serializers.ModelSerializer):
     # rien à reprendre côté `front-web`.
     daara_name = serializers.CharField(source='daara.name', read_only=True, allow_null=True)
     fete_name = serializers.CharField(source='fete.name', read_only=True, allow_null=True)
+
+    # ── Le Daara de l'ORGANISATEUR, qui n'est pas celui du Ndiguel ──────────
+    #
+    # 🔴 Ajouté le 2026-09-06 pour lever une confusion qui se voyait à l'écran.
+    #
+    # `Campaign.daara` est un CIBLAGE facultatif — « Ciblage par Daara
+    # (optionnel) » dans `AGENTS/tools/03_modeles_donnees.md`. Un Ndiguel
+    # n'appartient pas à un Daara : il peut viser toute la confrérie, et son
+    # organisateur est choisi pour mener l'opération, d'où qu'il vienne.
+    #
+    # Faute de ce champ, le mobile affichait `daara_name` SOUS LE NOM de
+    # l'organisateur, libellé « Daara de X ». Quand l'organisateur venait d'un
+    # autre Daara que celui visé — le cas normal — l'écran attribuait donc à
+    # une personne réelle un rattachement qui n'était pas le sien.
+    #
+    # Additif, comme les deux au-dessus : rien à reprendre côté `front-web`.
+    organizer_daara_name = serializers.CharField(
+        source='organizer.daara.name', read_only=True, allow_null=True,
+    )
     effective_status = serializers.SerializerMethodField()
     is_manageable = serializers.SerializerMethodField()
     days_remaining = serializers.SerializerMethodField()
@@ -59,6 +78,7 @@ class CampaignSerializer(serializers.ModelSerializer):
             'daara_name',
             'organizer',
             'organizer_name',
+            'organizer_daara_name',
             'organizer_role',
             'organizer_assigned_at',
             'created_by',

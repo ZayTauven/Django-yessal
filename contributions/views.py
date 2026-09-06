@@ -1,6 +1,6 @@
 ﻿from django.conf import settings
 from django.db import transaction
-from django.db.models import Count, Sum
+from django.db.models import Count, Q, Sum
 from django.utils import timezone
 
 from rest_framework import filters, permissions, status, viewsets
@@ -71,18 +71,55 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
         base = Donation.objects.select_related('campaign', 'donor', 'collector', 'target_daara', 'archive_id')
 
         # 1. Portée autorisée par le rôle.
+        #
+        # ═══════════════════════════════════════════════════════════════════
+        # 🔴 L'ARCHIVAGE EFFAÇAIT L'HISTORIQUE PERSONNEL DES MEMBRES
+        # ═══════════════════════════════════════════════════════════════════
+        # `archive_id__isnull=True` s'appliquait aussi à la vue d'un membre sur
+        # SES PROPRES dons. Or `create_archive` pose `archive_id` sur TOUS les
+        # dons confirmés d'un coup : une seule opération d'administration
+        # vidait donc l'historique confirmé de chaque membre de la confrérie,
+        # définitivement, sans que personne l'ait voulu.
+        #
+        # Le symptôme se lisait sur les captures du 2026-09-06 — « Total
+        # confirmé : 0 FCFA · 0 Jëfs confirmés » à côté de deux Jëfs en attente
+        # bien présents : le filtre par statut n'y était pour rien, les
+        # confirmés avaient simplement été archivés.
+        #
+        # L'archive est un instrument de COMPTABILITÉ, pas une suppression. Ce
+        # qu'un membre a donné lui appartient : il le voit archivé ou non. On
+        # ne garde l'exclusion que là où elle a un sens — le registre de
+        # travail d'un chef de Daara, dont les livres clos sortent.
+        # ═══════════════════════════════════════════════════════════════════
         if user.role == 'admin':
             queryset = base
         elif user.role == 'collector':
             # Multi-Daara collection: no daara restriction.
-            queryset = base.filter(collector=user)
+            #
+            # ⚠ Le filtre était `collector=user` SEUL : un collecteur voyait ce
+            # qu'il avait encaissé pour autrui et JAMAIS ce qu'il avait donné
+            # lui-même. Il est talibé avant d'être collecteur ; ses propres
+            # Jëfs sont les siens.
+            queryset = base.filter(Q(collector=user) | Q(donor=user))
         elif user.role == 'chef_daara':
             if user.daara_id:
-                queryset = base.filter(donor__daara=user.daara, archive_id__isnull=True)
+                # Registre du Daara : les livres clos en sortent, mais jamais
+                # les Jëfs du chef lui-même.
+                queryset = base.filter(
+                    Q(donor__daara=user.daara, archive_id__isnull=True) | Q(donor=user)
+                )
             else:
                 return Donation.objects.none()
+        elif user.role == 'tutelle':
+            # RG007 : « un compte de tutelle n'a accès qu'à la consultation de
+            # ses dons ». Il n'en fait aucun lui-même — les Jëfs faits EN SON
+            # NOM portent le tuteur en `donor` et sa fiche en `beneficiary`.
+            # Le filtre `donor=user` ne lui rendait donc rien du tout.
+            queryset = base.filter(
+                Q(donor=user) | Q(beneficiary__linked_user=user)
+            )
         else:
-            queryset = base.filter(donor=user, archive_id__isnull=True)
+            queryset = base.filter(donor=user)
 
         # 2. Filtre demandé par l'appelant, APPLIQUÉ APRÈS la portée du rôle.
         #
