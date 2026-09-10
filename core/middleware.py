@@ -5,19 +5,39 @@ from accounts.models import AuditLog
 
 
 class PublicHostMiddleware(MiddlewareMixin):
-    """Force le Host utilisé pour construire les URLs absolues.
+    """Force le Host — et au besoin le schéma — des URLs absolues.
 
     En conteneur, le front appelle le backend via le DNS interne
     (``http://backend:8000``) : sans cela, ``build_absolute_uri()`` renvoie des
     URLs de médias en ``backend:8000``, injoignables depuis le navigateur.
     Renseigner ``PUBLIC_HOST`` (ex. ``localhost:8000``) corrige les avatars,
     documents et images d'événements.
+
+    ``PUBLIC_SCHEME=https`` règle la moitié qui manquait. Le Host corrigé ne
+    suffit pas en production : l'appel interne n'étant pas chiffré, Django
+    fabrique des URLs en ``http://api.exemple.com/media/…``. Servies dans une
+    page HTTPS, le navigateur les refuse TOUTES en silence — c'est du contenu
+    mixte. Aucune erreur côté serveur, aucun 404 dans les journaux : seulement
+    des images absentes, ce qui est le symptôme le plus coûteux à diagnostiquer.
+
+    On pose l'en-tête que ``SECURE_PROXY_SSL_HEADER`` interroge déjà, plutôt
+    qu'un attribut inventé : ``request.scheme``, ``build_absolute_uri()`` et le
+    contrôle de redirection de ``SecurityMiddleware`` le lisent tous les trois,
+    et ce middleware s'exécute avant lui.
+
+    Conséquence à connaître : la redirection HTTPS de Django ne se déclenchera
+    plus, puisqu'il croira toute requête déjà chiffrée. C'est acceptable — et
+    voulu — derrière un frontal qui termine le TLS et redirige lui-même. À ne
+    donc PAS renseigner si le backend est exposé directement.
     """
 
     def process_request(self, request):
         public_host = os.environ.get('PUBLIC_HOST')
         if public_host:
             request.META['HTTP_HOST'] = public_host
+
+        if os.environ.get('PUBLIC_SCHEME', '').lower() == 'https':
+            request.META['HTTP_X_FORWARDED_PROTO'] = 'https'
 
 # Chemins dont les POST ne sont PAS des actes de gestion.
 #
