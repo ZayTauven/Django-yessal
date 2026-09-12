@@ -11,6 +11,7 @@ Le plafond de téléversement est appliqué en DEUX endroits, volontairement :
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.validators import FileExtensionValidator
 from django.utils.deconstruct import deconstructible
 
 
@@ -65,6 +66,65 @@ class ValidateUploadSize:
 
 # Instance partagée : c'est elle qu'on rattache aux champs de modèle.
 validate_upload_size = ValidateUploadSize()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Extensions autorisées en pièce jointe de conversation
+# ═══════════════════════════════════════════════════════════════════════════
+# Tous les autres champs de fichier du produit sont des `ImageField` : Pillow
+# refuse d'ouvrir ce qui n'est pas une image, donc un .html renommé .png est
+# rejeté sans qu'on ait rien à écrire.
+#
+# `comms.Message.file` est le seul `FileField` nu — une pièce jointe de
+# conversation peut légitimement être un PDF ou un tableur. Il n'avait donc
+# AUCUN contrôle de nature, et seule la taille était vérifiée.
+#
+# Constaté le 2026-09-12 depuis un compte membre ordinaire : l'envoi d'un
+# fichier .html est accepté (201), puis servi par `django.views.static.serve`
+# en `Content-Type: text/html` avec `Content-Disposition: inline`, depuis le
+# domaine de l'API. C'est une page arbitraire hébergée sur le domaine HTTPS de
+# l'organisation, partageable depuis une conversation. `X-Content-Type-Options:
+# nosniff` n'y change rien : le type n'est pas deviné, il est déclaré d'après
+# l'extension.
+#
+# ── Pourquoi une liste blanche, et pas une liste noire ─────────────────────
+# Une liste noire demande de connaître à l'avance tout ce qu'un navigateur
+# accepte d'exécuter. `.html` et `.svg` viennent à l'esprit ; `.xhtml`, `.xht`,
+# `.mhtml`, `.shtml`, `.xml` avec une feuille de style XSLT, ou un `.pdf` avec
+# du JavaScript embarqué, beaucoup moins. Chaque oubli est une brèche, et la
+# liste doit être tenue à jour à chaque nouveauté des navigateurs.
+#
+# Une liste blanche se trompe dans l'autre sens : au pire un membre ne peut pas
+# envoyer un format rare, le dit, et on ajoute l'extension. L'erreur coûte une
+# gêne, pas une faille.
+#
+# ⚠ Ce contrôle porte sur le NOM du fichier, donc il empêche que le serveur
+# annonce `text/html` — c'est exactement ce qu'on veut ici. Il ne prétend pas
+# vérifier le contenu : un exécutable renommé `.pdf` passe. C'est la seconde
+# moitié du correctif qui s'en charge, dans nginx, en forçant le
+# téléchargement au lieu de l'affichage sur `/media/chat_files/`.
+EXTENSIONS_PIECE_JOINTE = [
+    # Images
+    "jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif",
+    # Documents
+    "pdf", "doc", "docx", "odt", "rtf", "txt",
+    # Tableurs et présentations
+    "xls", "xlsx", "ods", "csv", "ppt", "pptx", "odp",
+    # Audio et vidéo — les messages vocaux passent par là
+    "mp3", "m4a", "aac", "ogg", "opus", "wav", "amr",
+    "mp4", "mov", "3gp", "webm",
+    # Archives
+    "zip",
+]
+
+validate_extension_piece_jointe = FileExtensionValidator(
+    allowed_extensions=EXTENSIONS_PIECE_JOINTE,
+    message=(
+        "Ce type de fichier n'est pas accepté en pièce jointe. "
+        "Formats autorisés : images, PDF, documents bureautiques, audio, "
+        "vidéo et archives ZIP."
+    ),
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -1,7 +1,7 @@
 from django.db import models
 from django.conf import settings
 from django.utils.translation import gettext_lazy as _
-from core.validators import validate_upload_size
+from core.validators import validate_extension_piece_jointe, validate_upload_size
 
 class Chat(models.Model):
     class ChatType(models.TextChoices):
@@ -90,7 +90,14 @@ class Message(models.Model):
         default=MessageType.TEXT
     )
     content = models.TextField()
-    file = models.FileField(upload_to='chat_files/', null=True, blank=True, validators=[validate_upload_size])
+    # Seul `FileField` nu du produit — voir `EXTENSIONS_PIECE_JOINTE` dans
+    # core/validators.py pour ce que l'absence de contrôle de nature permettait.
+    file = models.FileField(
+        upload_to='chat_files/',
+        null=True,
+        blank=True,
+        validators=[validate_upload_size, validate_extension_piece_jointe],
+    )
     reply_to = models.ForeignKey(
         'self',
         on_delete=models.SET_NULL,

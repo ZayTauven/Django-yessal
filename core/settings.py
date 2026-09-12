@@ -76,15 +76,67 @@ def _list_env(value):
     return [item.strip() for item in str(value).split(',') if item.strip()]
 
 
-DEBUG = _coerce_debug(config('DEBUG', default='true'))
+# ═══════════════════════════════════════════════════════════════════════════
+# Le défaut se FERME, il ne s'ouvre pas
+# ═══════════════════════════════════════════════════════════════════════════
+# `default='true'` faisait de DEBUG le seul réglage du projet dont l'ABSENCE
+# ouvrait. Ce n'est pas une hypothèse : le 12 septembre 2026, la pile de
+# démonstration tournait sur un domaine public avec DEBUG=True et
+# ALLOWED_HOSTS=['*'], simplement parce que la ligne DEBUG avait disparu du
+# fichier d'environnement lors d'une édition à la main. Rien ne l'a signalé —
+# l'application répondait 200 partout, et la première erreur 500 aurait rendu
+# la table des réglages, SECRET_KEY et mots de passe compris.
+#
+# Un fichier d'environnement peut être tronqué, mal fusionné, ou simplement
+# oublié. Il faut donc que l'oubli mène au comportement le plus sûr, pas au
+# plus pratique. Le développement, lui, pose DEBUG explicitement — c'est déjà
+# le cas dans docker-compose.override.yml et dans core/.env.local.
+# Nommé plutôt qu'écrit dans l'appel : c'est CETTE valeur que
+# `core.tests_security` vérifie, et une constante se teste là où un littéral
+# enfoui dans un appel ne se teste pas.
+DEBUG_PAR_DEFAUT = 'false'
+
+DEBUG = _coerce_debug(config('DEBUG', default=DEBUG_PAR_DEFAUT))
 
 ALLOWED_HOSTS = ['*'] if DEBUG else _list_env(config('ALLOWED_HOSTS', default='localhost,127.0.0.1'))
 
-if not DEBUG and SECRET_KEY == DEV_SECRET_KEY:
-    raise ImproperlyConfigured(
-        "SECRET_KEY porte encore la valeur de développement alors que DEBUG=False. "
-        "Renseignez SECRET_KEY (50+ caractères aléatoires) dans l'environnement."
-    )
+# ── Le garde sur la clé de signature ───────────────────────────────────────
+# Il ne comparait qu'à la clé de développement. Une clé de ONZE caractères est
+# donc passée en production sans un mot — constatée le 12 septembre 2026 sur la
+# pile de démonstration, alors qu'elle signait les JWT (SIMPLE_JWT n'ayant pas
+# de SIGNING_KEY, il retombe sur SECRET_KEY), les cookies de session et les
+# jetons de réinitialisation de mot de passe.
+#
+# 50 est le seuil de Django lui-même (`manage.py check --deploy`, W009) : on
+# refuse de démarrer là où il se contente d'un avertissement, parce qu'un
+# avertissement dans un journal de démarrage n'est lu par personne.
+LONGUEUR_MINIMALE_SECRET_KEY = 50
+
+
+def _verifier_secret_key(secret_key: str, debug: bool) -> None:
+    """Lève `ImproperlyConfigured` si la clé ne vaut rien en production.
+
+    Fonction plutôt que bloc `if` au fil du module pour une seule raison :
+    un contrôle qui ne s'exécute qu'à l'import est un contrôle qu'aucun test
+    ne peut vérifier. Celui-ci a laissé passer une clé de onze caractères ;
+    `core.tests_security` l'appelle maintenant directement.
+    """
+    if debug:
+        return
+    if secret_key == DEV_SECRET_KEY:
+        raise ImproperlyConfigured(
+            "SECRET_KEY porte encore la valeur de développement alors que DEBUG=False. "
+            "Renseignez SECRET_KEY (50+ caractères aléatoires) dans l'environnement."
+        )
+    if len(secret_key) < LONGUEUR_MINIMALE_SECRET_KEY:
+        raise ImproperlyConfigured(
+            f"SECRET_KEY ne fait que {len(secret_key)} caractères alors que DEBUG=False ; "
+            f"il en faut au moins {LONGUEUR_MINIMALE_SECRET_KEY}. "
+            "En générer une :  python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+        )
+
+
+_verifier_secret_key(SECRET_KEY, DEBUG)
 
 # Le défaut suit DEBUG : ouvert en local, fermé dès qu'on quitte le mode
 # développement. Auparavant `default=True` laissait n'importe quelle origine

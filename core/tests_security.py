@@ -207,3 +207,176 @@ class RoleAdminEtIsStaffTests(TestCase):
 
         user.refresh_from_db()
         self.assertFalse(user.is_staff)
+
+
+class PieceJointeConversationTests(APITestCase):
+    """Une pièce jointe ne doit pas pouvoir être une page exécutable.
+
+    `comms.Message.file` était le seul `FileField` nu du produit : tous les
+    autres champs de fichier sont des `ImageField`, que Pillow protège en
+    refusant d'ouvrir ce qui n'est pas une image. Celui-ci ne vérifiait que la
+    TAILLE.
+
+    Constaté le 2026-09-12 depuis un compte membre ordinaire : l'envoi d'un
+    fichier `.html` était accepté (201), puis servi en `Content-Type:
+    text/html` avec `Content-Disposition: inline` depuis le domaine de l'API —
+    soit une page arbitraire hébergée sur le domaine HTTPS de l'organisation
+    et partageable depuis une conversation.
+
+    Ces tests rejouent exactement cet envoi. Le premier échouerait de nouveau
+    si la liste blanche disparaissait du modèle, ou si un remaniement du
+    sérialiseur cessait de reporter les validateurs du champ.
+    """
+
+    def setUp(self):
+        from comms.models import Chat, ChatMembership
+
+        ldd = LDD.objects.create(code='PJ', name='LDD pièces jointes')
+        daara = Daara.objects.create(name='Daara pièces jointes', ldd=ldd)
+        self.membre = User.objects.create_user(
+            email='piece.jointe@test.com', password='Piece123!',
+            role=User.Role.MEMBER, daara=daara,
+        )
+        self.chat = Chat.objects.create(chat_type='group', name='Salon de test',
+                                        created_by=self.membre)
+        ChatMembership.objects.create(chat=self.chat, user=self.membre)
+        self.client.force_authenticate(user=self.membre)
+
+    def _envoyer(self, nom, contenu=b'peu importe'):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        return self.client.post(
+            '/api/comms/messages/',
+            {
+                'chat': self.chat.id,
+                'content': 'test',
+                'file': SimpleUploadedFile(nom, contenu),
+            },
+            format='multipart',
+        )
+
+    def test_une_page_html_est_refusee(self):
+        reponse = self._envoyer('piege.html', b'<script>alert(1)</script>')
+        self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('file', reponse.data)
+
+    def test_un_svg_est_refuse(self):
+        """Le SVG porte du script, et les navigateurs l'exécutent."""
+        self.assertEqual(
+            self._envoyer('piege.svg', b'<svg xmlns="http://www.w3.org/2000/svg"/>').status_code,
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+    def test_un_javascript_est_refuse(self):
+        self.assertEqual(
+            self._envoyer('piege.js', b'alert(1)').status_code,
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+    def test_l_extension_seule_compte_pas_le_type_annonce(self):
+        """Renommer ne doit pas suffire à faire passer une page.
+
+        L'inverse est le vrai risque : un `.html` déclaré `image/png` par le
+        client. Le contrôle porte sur le NOM, précisément parce que c'est le
+        nom — et non l'en-tête envoyé par le client — qui décidera du
+        Content-Type au moment de servir le fichier.
+        """
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        reponse = self.client.post(
+            '/api/comms/messages/',
+            {
+                'chat': self.chat.id,
+                'content': 'test',
+                'file': SimpleUploadedFile('piege.html', b'<h1>x</h1>',
+                                           content_type='image/png'),
+            },
+            format='multipart',
+        )
+        self.assertEqual(reponse.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_les_pieces_jointes_legitimes_passent(self):
+        """Une liste blanche trop serrée casserait l'usage : on le vérifie."""
+        for nom in ('rapport.pdf', 'photo.png', 'recu.jpg', 'tableau.xlsx',
+                    'note.txt', 'vocal.m4a'):
+            with self.subTest(fichier=nom):
+                reponse = self._envoyer(nom)
+                self.assertEqual(
+                    reponse.status_code, status.HTTP_201_CREATED,
+                    f"{nom} devrait être accepté : {reponse.data}",
+                )
+
+
+class DefautsQuiSeFermentTests(TestCase):
+    """Une variable d'environnement ABSENTE doit mener au comportement sûr.
+
+    Le 12 septembre 2026, la pile de démonstration tournait sur un domaine
+    public avec `DEBUG=True` et `ALLOWED_HOSTS=['*']` — non par décision, mais
+    parce que la ligne `DEBUG` avait disparu du fichier d'environnement lors
+    d'une édition à la main, et que le défaut valait `'true'`. Rien ne l'a
+    signalé : l'application répondait 200 partout.
+
+    Le même fichier portait une `SECRET_KEY` de onze caractères, que le garde
+    laissait passer parce qu'il ne comparait qu'à la clé de développement.
+    """
+
+    def test_une_valeur_de_debug_absente_ou_illisible_ferme(self):
+        from core.settings import _coerce_debug
+
+        for valeur in ('', None, 'peut-etre', 'oui', '2'):
+            with self.subTest(valeur=valeur):
+                self.assertFalse(
+                    _coerce_debug(valeur),
+                    f"{valeur!r} ne doit pas activer DEBUG",
+                )
+
+    def test_les_valeurs_explicites_restent_comprises(self):
+        from core.settings import _coerce_debug
+
+        for valeur in ('1', 'true', 'True', 'yes', 'on', 'dev', True):
+            self.assertTrue(_coerce_debug(valeur), f"{valeur!r} doit activer DEBUG")
+        for valeur in ('0', 'false', 'no', 'off', 'prod', 'production', False):
+            self.assertFalse(_coerce_debug(valeur), f"{valeur!r} ne doit pas activer DEBUG")
+
+    def test_le_defaut_de_debug_est_ferme(self):
+        """Le défaut lui-même, pas seulement la fonction qui le lit.
+
+        C'est ce test qui aurait échoué avant le 12 septembre 2026 : le défaut
+        valait `'true'`, donc un fichier d'environnement sans ligne `DEBUG`
+        démarrait l'application en mode débogage.
+        """
+        from core.settings import DEBUG_PAR_DEFAUT, _coerce_debug
+
+        self.assertFalse(
+            _coerce_debug(DEBUG_PAR_DEFAUT),
+            "DEBUG doit être faux quand la variable n'est pas renseignée",
+        )
+
+    def test_une_cle_trop_courte_empeche_le_demarrage(self):
+        from django.core.exceptions import ImproperlyConfigured
+
+        from core.settings import _verifier_secret_key
+
+        with self.assertRaises(ImproperlyConfigured) as ctx:
+            _verifier_secret_key('x' * 11, debug=False)
+        self.assertIn('11', str(ctx.exception))
+
+    def test_la_cle_de_developpement_empeche_le_demarrage(self):
+        from django.core.exceptions import ImproperlyConfigured
+
+        from core.settings import DEV_SECRET_KEY, _verifier_secret_key
+
+        with self.assertRaises(ImproperlyConfigured):
+            _verifier_secret_key(DEV_SECRET_KEY, debug=False)
+
+    def test_une_cle_correcte_passe(self):
+        from core.settings import _verifier_secret_key
+
+        _verifier_secret_key('a' * 50, debug=False)  # ne doit rien lever
+
+    def test_en_developpement_le_garde_ne_gene_pas(self):
+        """Un développeur ne doit pas avoir à générer une clé pour démarrer."""
+        from core.settings import DEV_SECRET_KEY, _verifier_secret_key
+
+        _verifier_secret_key(DEV_SECRET_KEY, debug=True)
+        _verifier_secret_key('court', debug=True)

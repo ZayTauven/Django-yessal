@@ -1,6 +1,12 @@
-core/.env
-core/.env.local
-core/.env.prod
+# Tout fichier d'environnement, SAUF le modèle commenté.
+#
+# L'énumération précédente (`core/.env`, `.env.local`, `.env.prod`) laissait
+# passer `core/.env.demo`, qui porte sur le VPS la clé de signature, le mot de
+# passe de la base et celui du compte d'envoi Gmail. Une liste nominative
+# oublie toujours le fichier suivant : on inverse, et on ré-autorise le seul
+# qui doit être versionné.
+core/.env*
+!core/.env.example
 .env
 .venv
 *.pyc
