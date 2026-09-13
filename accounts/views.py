@@ -601,7 +601,55 @@ class UserDocumentViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         user_id = self.kwargs.get('user_id')
-        if self.request.user.role == User.Role.ADMIN and user_id:
+        pour_autrui = self.request.user.role == User.Role.ADMIN and user_id
+        cible = user_id if pour_autrui else self.request.user.pk
+
+        # ═══════════════════════════════════════════════════════════════════
+        # 🔴 UN SECOND ENVOI DU MÊME TYPE DE PIÈCE PARTAIT EN 500
+        # ═══════════════════════════════════════════════════════════════════
+        # `UserDocument.Meta.unique_together = ('user', 'doc_type')` : il ne
+        # peut exister qu'une carte d'identité par membre. DRF sait normalement
+        # en faire un 400 tout seul — il construit un `UniqueTogetherValidator`
+        # à partir de `unique_together`. **Sauf quand l'un des champs n'est pas
+        # inscriptible** : `user` est dans `read_only_fields`, il ne figure donc
+        # pas dans les `_writable_fields` du sérialiseur, et
+        # `get_unique_together_validators()` SAUTE le validateur en silence.
+        #
+        # La contrainte n'était plus tenue que par PostgreSQL, et une
+        # `IntegrityError` non rattrapée est un 500. Reproduit le 2026-09-12 :
+        #
+        #   POST /api/users/2/documents/  doc_type=national_id  (2e fois)
+        #   → django.db.utils.IntegrityError: duplicate key value violates
+        #     unique constraint "accounts_userdocument_user_id_doc_type_…_uniq"
+        #   → HTTP 500
+        #
+        # Côté membre, cela s'affichait « Vérifiez votre connexion internet » —
+        # le repli générique de l'écran mobile — c'est-à-dire un conseil faux,
+        # qui fait recommencer à l'identique. Le cas est courant et ne suppose
+        # aucune maladresse : il suffit que le GET de la liste ait échoué (la
+        # route Dakar ↔ VPS perd des connexions) pour que le client ne sache
+        # pas qu'une pièce existe déjà et POSTe au lieu de PATCHer.
+        #
+        # ⚠ On refuse plutôt que d'écraser. Un `update_or_create` remplacerait
+        # sans le dire une pièce DÉJÀ VALIDÉE — et côté administration, un
+        # dépôt pour autrui écraserait le document d'un membre sans trace.
+        # Le message dit quoi faire ; l'application, elle, recharge sa liste et
+        # bascule en correction (voir `app/(app)/profile/documents.tsx`).
+        doc_type = serializer.validated_data.get('doc_type')
+        existant = UserDocument.objects.filter(user_id=cible, doc_type=doc_type).first()
+        if existant is not None:
+            raise serializers.ValidationError({
+                'doc_type': [
+                    "Une pièce de ce type a déjà été transmise. "
+                    "Corrigez-la plutôt que d'en ajouter une seconde."
+                ],
+                # L'identifiant permet au client de basculer seul en correction
+                # sans avoir à recharger toute la liste — utile précisément
+                # quand c'est le réseau qui a fait défaut.
+                'document_id': existant.pk,
+            })
+
+        if pour_autrui:
             doc = serializer.save(user_id=user_id)
             self._notify_admins_document_submission(doc)
             return
