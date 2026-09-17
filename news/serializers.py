@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from core.richtext import sanitize_html
+
 from .models import NewsPost, NewsGalleryImage
 
 
@@ -33,3 +35,15 @@ class NewsPostSerializer(serializers.ModelSerializer):
             'gallery',
         ]
         read_only_fields = ['slug', 'created_by', 'created_at', 'updated_at']
+
+    def validate_content(self, value):
+        """
+        Le corps d'un article est du HTML depuis que l'éditeur riche existe, et
+        il est rendu tel quel par le web comme par le mobile. Il ne franchit
+        donc la frontière de l'API qu'assaini — ici, et pas seulement dans
+        l'éditeur, parce que l'API se joint sans éditeur.
+
+        Les articles antérieurs, saisis en texte brut, traversent inchangés :
+        sans balise à retirer, `sanitize_html` n'a rien à faire.
+        """
+        return sanitize_html(value)
