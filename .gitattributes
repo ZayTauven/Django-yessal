@@ -1,0 +1,47 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Fins de ligne — ce qui DOIT rester en LF
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# 🔴 L'ABSENCE DE CE FICHIER A MIS L'API HORS SERVICE LE 18 SEPTEMBRE 2026.
+#
+# Le poste de développement a `core.autocrlf=true`. L'index stocke bien du LF —
+# `git ls-files --eol` le confirme — mais `git archive` applique la conversion
+# de sortie et produit du CRLF. Le kit de déploiement extrait cette archive sur
+# le VPS, où `entrypoint.prod.sh` commençait alors par :
+#
+#     #!/bin/sh\r
+#
+# Le noyau Linux cherche littéralement l'interpréteur « /bin/sh\r », qui
+# n'existe pas, et Docker répond :
+#
+#     exec /app/entrypoint.prod.sh: no such file or directory
+#
+# Le message désigne un fichier bien présent et exécutable : rien n'oriente
+# vers les fins de ligne. Le conteneur redémarrait en boucle, l'API répondait
+# 502 pendant une quinzaine de minutes.
+#
+# Déclarer `eol=lf` ici règle le cas à la source, quel que soit le réglage
+# `autocrlf` du poste qui construit l'archive.
+
+# Repli sain : git décide, mais n'impose jamais CRLF dans l'archive.
+* text=auto eol=lf
+
+# Tout ce qu'un noyau ou un démon Linux lit ligne à ligne.
+*.sh        text eol=lf
+*.conf      text eol=lf
+Dockerfile  text eol=lf
+*.Dockerfile text eol=lf
+.env*       text eol=lf
+
+# Binaires : aucune conversion, jamais.
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.pdf       binary
+*.woff      binary
+*.woff2     binary
+*.xlsx      binary
+*.dump      binary
+*.tar.gz    binary
