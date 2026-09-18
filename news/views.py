@@ -8,7 +8,10 @@ from .serializers import NewsPostSerializer, NewsGalleryImageSerializer
 
 class NewsPostViewSet(viewsets.ModelViewSet):
     serializer_class = NewsPostSerializer
-    queryset = NewsPost.objects.all()
+    # Mesure : 15 requetes pour 7 articles, 2 avec le prechargement. Le
+    # serialiseur lit `gallery` (relation inverse) et `created_by.get_full_name`
+    # (cle etrangere) — soit deux requetes par article sans cela.
+    queryset = NewsPost.objects.select_related('created_by').prefetch_related('gallery')
     lookup_field = 'slug'
     filter_backends = [filters.SearchFilter]
     search_fields = ['title', 'excerpt', 'content']
@@ -59,3 +62,22 @@ class NewsGalleryImageViewSet(viewsets.ModelViewSet):
         if self.action in {'list', 'retrieve'}:
             return [permissions.IsAuthenticated()]
         return [permissions.IsAdminUser()]
+
+    def get_queryset(self):
+        """
+        Les photos suivent la visibilité de LEUR ARTICLE.
+
+        `NewsPostViewSet` masque bien les brouillons, mais cette vue-ci servait
+        `NewsGalleryImage.objects.all()` à tout compte authentifié. Un membre
+        appelant `/api/news/gallery/` recevait donc les photos d'articles non
+        publiés — avec leur URL de média, directement ouvrable.
+
+        Ce n'est pas la fuite la plus grave du produit, mais c'est exactement
+        celle qu'on ne voit pas : rien dans l'interface n'y mène, et le contrôle
+        d'accès de l'article donnait l'impression que le sujet était traité.
+        """
+        qs = super().get_queryset()
+        user = self.request.user
+        if user.is_staff or getattr(user, 'role', None) == 'admin':
+            return qs
+        return qs.filter(post__is_published=True)

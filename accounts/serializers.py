@@ -234,7 +234,16 @@ class DaaraSerializer(serializers.ModelSerializer):
             name = c.get_full_name()
             return name.strip() if name else (c.email or c.phone)
 
-        chef_user = User.objects.filter(daara=obj, role=User.Role.CHEF_DAARA).first()
+        # `chef_candidates` est pose par le Prefetch de DaaraViewSet. Sans lui,
+        # ce repli interrogeait la base UNE FOIS PAR DAARA : 376 requetes pour
+        # afficher la liste. On le consomme quand il est la, et on retombe sur
+        # la requete directe sinon — un appel isole au serialiseur (detail,
+        # commande de gestion) doit continuer de fonctionner.
+        prefetched = getattr(obj, 'chef_candidates', None)
+        if prefetched is not None:
+            chef_user = prefetched[0] if prefetched else None
+        else:
+            chef_user = User.objects.filter(daara=obj, role=User.Role.CHEF_DAARA).first()
         if chef_user:
             name = chef_user.get_full_name()
             return name.strip() if name else (chef_user.email or chef_user.phone)
@@ -243,7 +252,17 @@ class DaaraSerializer(serializers.ModelSerializer):
 
     def get_collectors(self, obj):
         request = self.context.get('request')
-        qs = User.objects.filter(daara=obj, role=User.Role.COLLECTOR).order_by('last_name', 'first_name')
+        # Meme raison que `get_chef_full_name` : sans le Prefetch, c'est une
+        # requete par Daara. Le tri est repete a l'identique dans le Prefetch de
+        # la vue, pour que l'ordre affiche ne depende pas du chemin emprunte.
+        prefetched = getattr(obj, 'collector_list', None)
+        qs = (
+            prefetched
+            if prefetched is not None
+            else User.objects.filter(daara=obj, role=User.Role.COLLECTOR).order_by(
+                'last_name', 'first_name'
+            )
+        )
         return [
             {
                 'id': u.id,

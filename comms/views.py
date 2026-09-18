@@ -544,10 +544,16 @@ class AnnouncementViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        queryset = Announcement.objects.filter(is_published=True)
+        # `AnnouncementSerializer` expose `daara_name` (source='daara.name') :
+        # sans jointure, c'est une requete par annonce. Invisible aujourd'hui —
+        # il n'y en a qu'une en base — et lineaire des qu'il y en aura cent.
+        # Les DEUX branches en ont besoin : celle de l'admin lit le meme champ.
+        queryset = Announcement.objects.filter(is_published=True).select_related('daara')
 
         if user.role == 'admin':
-            return Announcement.objects.all().order_by('-created_at')
+            return (
+                Announcement.objects.select_related('daara').order_by('-created_at')
+            )
 
         return queryset.filter(
             (Q(target='global') | Q(daara=user.daara))

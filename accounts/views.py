@@ -1,4 +1,4 @@
-﻿from django.db.models import Sum, Count
+﻿from django.db.models import Sum, Count, Prefetch
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -256,7 +256,38 @@ class DaaraViewSet(viewsets.ModelViewSet):
         voir tous les Daaras — un administrateur doit pouvoir rouvrir ce qu'il
         a fermé.
         """
-        queryset = super().get_queryset().annotate(members_count=Count('members'))
+        # ── Prechargement : 1129 requetes -> 4 ───────────────────────────
+        # Mesure avant correctif sur les 376 Daaras reels : 1129 requetes pour
+        # UNE liste. L'annotation `members_count` existait deja et evitait un
+        # premier paquet, mais trois relations restaient lues ligne par ligne —
+        # `ldd`, `chef`, et les deux requetes utilisateur des methodes du
+        # serialiseur.
+        #
+        # Les deux `Prefetch` portent un `to_attr` parce que `get_collectors`
+        # et `get_chef_full_name` filtrent par ROLE : un `prefetch_related`
+        # simple chargerait tous les membres et les methodes referaient leur
+        # requete. Le tri est repete a l'identique dans le Prefetch des
+        # collecteurs — voir le serialiseur.
+        queryset = (
+            super()
+            .get_queryset()
+            .annotate(members_count=Count('members'))
+            .select_related('ldd', 'chef')
+            .prefetch_related(
+                Prefetch(
+                    'members',
+                    queryset=User.objects.filter(role=User.Role.COLLECTOR).order_by(
+                        'last_name', 'first_name'
+                    ),
+                    to_attr='collector_list',
+                ),
+                Prefetch(
+                    'members',
+                    queryset=User.objects.filter(role=User.Role.CHEF_DAARA),
+                    to_attr='chef_candidates',
+                ),
+            )
+        )
 
         ldd_id = self.request.query_params.get('ldd_id')
         if ldd_id is not None:
