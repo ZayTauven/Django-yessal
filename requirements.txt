@@ -15,7 +15,10 @@ idna==3.15
 ndg-httpsclient==0.5.1
 numpy==2.4.4
 openpyxl==3.1.5
-pandas==3.0.2
+# pandas retiré le 2026-09-18 : sa SEULE utilisation était la lecture du
+# classeur d'import des Daaras, qui passe désormais par openpyxl — pandas
+# ne voit pas les cellules fusionnées, et c'est ce qui faisait échouer
+# l'import sur la ligne de totaux. Il emportait numpy : 108 Mo d'image.
 pillow==12.2.0
 psycopg2-binary==2.9.11
 pusher==3.3.4

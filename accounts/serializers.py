@@ -118,6 +118,22 @@ class LDDSerializer(serializers.ModelSerializer):
         fields = ['id', 'code', 'name', 'description', 'location', 'is_active']
 
 
+class LDDAdminSerializer(LDDSerializer):
+    """La zone telle que l'écran d'administration en a besoin.
+
+    `daaras_count` vient d'une ANNOTATION, jamais d'un `obj.daaras.count()` :
+    `LDDSerializer` est imbriqué dans `DaaraSerializer`, et un compteur calculé
+    dans le sérialiseur ajouterait une requête par ligne — 376 requêtes pour
+    afficher la liste des Daaras. C'est la raison d'être de cette sous-classe :
+    le compteur n'existe que là où le queryset l'a préparé.
+    """
+
+    daaras_count = serializers.IntegerField(read_only=True)
+
+    class Meta(LDDSerializer.Meta):
+        fields = LDDSerializer.Meta.fields + ['daaras_count']
+
+
 class LDDBriefSerializer(serializers.ModelSerializer):
     """Zone territoriale réduite à ce qui sert à grouper la liste."""
 

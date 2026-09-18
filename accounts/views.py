@@ -25,7 +25,7 @@ from .serializers import (
     LoginSerializer,
     UserSerializer,
     ProfileUpdateSerializer,
-    LDDSerializer,
+    LDDAdminSerializer,
     DaaraSerializer,
     PublicDaaraSerializer,
     TutelleSerializer,
@@ -39,6 +39,7 @@ from .serializers import (
     UserDocumentValidationSerializer,
 )
 from .services.title_service import approve_title_request, refuse_title_request
+from .services.ldd_import import ModeImport, importer as importer_classeur
 
 from events.models import Campaign
 from contributions.models import Donation
@@ -204,10 +205,152 @@ class ChangePasswordView(APIView):
         })
 
 
-class LDDViewSet(viewsets.ReadOnlyModelViewSet):
-    serializer_class = LDDSerializer
-    queryset = LDD.objects.filter(is_active=True).order_by('code')
-    permission_classes = [permissions.AllowAny]
+def _est_admin(user) -> bool:
+    return bool(
+        user
+        and user.is_authenticated
+        and (user.is_superuser or getattr(user, 'role', None) == User.Role.ADMIN)
+    )
+
+
+class IsAdminOrReadOnly(permissions.BasePermission):
+    """Lecture ouverte à tous, écriture réservée à l'administration.
+
+    La lecture reste ANONYME à dessein : le formulaire d'inscription, web comme
+    mobile, fait choisir sa zone avant tout compte. La retirer rendrait
+    l'inscription impossible.
+    """
+
+    message = "Seul un administrateur peut modifier les zones territoriales."
+
+    def has_permission(self, request, view):
+        if request.method in permissions.SAFE_METHODS:
+            return True
+        return _est_admin(request.user)
+
+
+class LDDViewSet(viewsets.ModelViewSet):
+    """Les zones territoriales (LDD).
+
+    🔴 CE VIEWSET ÉTAIT UN `ReadOnlyModelViewSet`, et l'écran d'administration
+    appelait pourtant `createLDD`, `updateLDD` et `deleteLDD`. Les trois
+    recevaient un 405 : créer, renommer et supprimer une zone étaient
+    impossibles depuis l'interface prévue pour cela — sans qu'aucun message
+    n'explique pourquoi, le front traduisant le 405 en échec générique.
+
+    L'écriture est ouverte ici, mais à l'administration seule.
+    """
+
+    serializer_class = LDDAdminSerializer
+    permission_classes = [IsAdminOrReadOnly]
+
+    def get_queryset(self):
+        qs = LDD.objects.annotate(daaras_count=Count('daaras'))
+
+        # Par défaut on ne sert que les zones OUVERTES : c'est la liste que le
+        # formulaire d'inscription consomme, et une zone fermée n'y a rien à
+        # faire. L'administration peut demander les fermées pour les rouvrir —
+        # on ne gère pas ce qu'on ne voit pas.
+        if not (
+            _est_admin(self.request.user)
+            and self.request.query_params.get('include_inactive') in ('1', 'true', 'True')
+        ):
+            qs = qs.filter(is_active=True)
+
+        # ⚠ LE TRI DOIT ÊTRE EXPLICITE. `annotate()` avec un agrégat produit un
+        # GROUP BY et Django ABANDONNE alors le `Meta.ordering` du modèle : la
+        # requête sort sans ORDER BY et l'ordre devient celui que Postgres veut
+        # bien rendre — variable d'un appel à l'autre. Mesuré sur ce queryset :
+        # sans annotation « DS AF, DS AF, DS BS, DS CN », avec annotation
+        # « DS S18, DS S15, DS S7, DS S10 ».
+        return qs.order_by('code', 'name')
+
+    def destroy(self, request, *args, **kwargs):
+        """Refuse de supprimer une zone qui tient encore des Daaras.
+
+        `Daara.ldd` était en CASCADE : cette suppression emportait en silence
+        tous les Daaras de la zone, leurs adhésions, et détachait leurs membres
+        de leur Daara. Vingt-neuf Daaras pouvaient disparaître sur un clic.
+
+        La clé est désormais en PROTECT. On répond ici AVANT que la base ne
+        lève, pour dire ce qui bloque et ce qu'il faut faire.
+        """
+        ldd = self.get_object()
+        rattaches = ldd.daaras.count()
+        if rattaches:
+            apercu = list(ldd.daaras.values_list('name', flat=True)[:5])
+            return Response(
+                {
+                    'detail': (
+                        f"« {ldd.name} » regroupe encore {rattaches} Daara"
+                        f"{'s' if rattaches > 1 else ''}. Réaffectez-les à une autre "
+                        "zone avant de la supprimer, ou désactivez-la."
+                    ),
+                    'daaras_count': rattaches,
+                    'daaras_apercu': apercu,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=['post'], url_path='transferer-daaras')
+    def transferer_daaras(self, request, pk=None):
+        """Déplace en bloc les Daaras de cette zone vers une autre.
+
+        Sans cela, vider une zone de vingt-neuf Daaras demandait vingt-neuf
+        modifications à la main — et la suppression restait hors d'atteinte en
+        pratique. Le déplacement PRÉSERVE les Daaras : leurs membres, leurs
+        dons et leurs Ndiguels suivent, là où supprimer puis recréer les
+        perdrait.
+        """
+        source = self.get_object()
+        cible_id = request.data.get('target_ldd')
+        if not cible_id:
+            return Response(
+                {'detail': "Indiquez la zone de destination (`target_ldd`)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if str(cible_id) == str(source.pk):
+            return Response(
+                {'detail': "La zone de destination est la zone de départ."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            cible = LDD.objects.get(pk=cible_id)
+        except (LDD.DoesNotExist, ValueError, TypeError):
+            return Response(
+                {'detail': "Zone de destination introuvable."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Un Daara ne peut pas porter deux fois le même nom dans une zone
+        # (`unique_together`). On le dit plutôt que de laisser la base lever.
+        noms_cible = set(cible.daaras.values_list('name', flat=True))
+        collisions = sorted(
+            n for n in source.daaras.values_list('name', flat=True) if n in noms_cible
+        )
+        if collisions:
+            return Response(
+                {
+                    'detail': (
+                        f"{len(collisions)} Daara(s) portent déjà ce nom dans "
+                        f"« {cible.name} » : {', '.join(collisions[:5])}"
+                        f"{'…' if len(collisions) > 5 else ''}. Renommez-les ou "
+                        "déplacez-les un par un."
+                    ),
+                    'collisions': collisions,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        deplaces = source.daaras.update(ldd=cible)
+        return Response(
+            {
+                'detail': f"{deplaces} Daara(s) déplacé(s) vers « {cible.name} ».",
+                'moved': deplaces,
+                'target': {'id': cible.pk, 'code': cible.code, 'name': cible.name},
+            }
+        )
 
 
 class DaaraViewSet(viewsets.ModelViewSet):
@@ -295,6 +438,11 @@ class DaaraViewSet(viewsets.ModelViewSet):
                 queryset = queryset.filter(ldd_id=int(ldd_id))
             except (TypeError, ValueError):
                 return queryset.none()
+
+        # Tri EXPLICITE, pour la même raison que sur les zones : l'annotation
+        # `members_count` produit un GROUP BY, et Django laisse alors tomber le
+        # `Meta.ordering`. Le poser ici est le seul moyen d'obtenir un ordre.
+        queryset = queryset.order_by('name')
 
         if not self.request.user.is_authenticated:
             return queryset.filter(is_active=True)
@@ -422,43 +570,60 @@ class DaaraViewSet(viewsets.ModelViewSet):
             'campaigns': campaigns_data,
         })
 
-    @action(detail=False, methods=['post'], url_path='import-excel')
+    @action(
+        detail=False,
+        methods=['post'],
+        url_path='import-excel',
+        permission_classes=[permissions.IsAuthenticated],
+    )
     def import_excel(self, request):
+        """Importe un classeur « DAARA / LDD / CODE LDD ».
+
+        🔴 L'ANCIENNE VERSION ÉCRIVAIT SANS TRANSACTION. Sur le fichier de
+        référence du Sénégal, elle traitait 397 lignes puis mourait sur la
+        ligne de totaux fusionnée (`A399:D399`, « 397 … 31 ») avec un
+        `DataError: value too long for character varying(100)`. Les 397 lignes
+        étaient déjà acquises : l'écran annonçait un échec, la page rafraîchie
+        montrait les données, et plus personne ne savait ce qui manquait.
+
+        Elle résolvait en outre la zone sur le seul `code`, que le métier
+        partage entre plusieurs zones — d'où quatre zones perdues et
+        quarante-six Daaras versés dans le mauvais territoire.
+
+        Tout cela vit maintenant dans `accounts.services.ldd_import`, sous
+        transaction. Voir son docstring pour le détail des trois défauts.
+        """
+        if not _est_admin(request.user):
+            return Response(
+                {'detail': "Seul un administrateur peut importer des Daaras."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         if 'file' not in request.FILES:
-            return Response({'error': 'Aucun fichier fourni.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': 'Aucun fichier fourni.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        excel_file = request.FILES['file']
+        mode = request.data.get('mode', ModeImport.STRICT)
+        if mode not in (ModeImport.STRICT, ModeImport.RECONCILIATION):
+            return Response(
+                {'detail': f"Mode inconnu « {mode} »."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
         try:
-            import pandas as pd
+            rapport = importer_classeur(request.FILES['file'], mode=mode)
+        except Exception:
+            # Un imprévu reste un incident serveur : on le journalise en entier
+            # au lieu de renvoyer `str(e)` au navigateur, qui exposait jusqu'ici
+            # le détail interne de la base à quiconque téléversait un fichier.
+            logger.exception("Import Daaras/LDD : échec inattendu")
+            return Response(
+                {'detail': "L'import a échoué. L'incident a été enregistré."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
-            df = pd.read_excel(excel_file)
-            required_columns = {'DAARA', 'LDD', 'CODE LDD'}
-            if not required_columns.issubset(set(df.columns)):
-                return Response(
-                    {'error': "Format invalide. Les colonnes 'DAARA', 'LDD' et 'CODE LDD' sont requises."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            df[['LDD', 'CODE LDD']] = df[['LDD', 'CODE LDD']].ffill()
-
-            daara_count = 0
-            for _, row in df.iterrows():
-                if pd.isna(row['DAARA']):
-                    continue
-                daara_name = str(row['DAARA']).strip()
-                ldd_name = str(row['LDD']).strip()
-                ldd_code = str(row['CODE LDD']).strip()
-
-                if not daara_name:
-                    continue
-
-                ldd, _ = LDD.objects.get_or_create(code=ldd_code, defaults={'name': ldd_name})
-                Daara.objects.get_or_create(name=daara_name, ldd=ldd)
-                daara_count += 1
-
-            return Response({'success': f'{daara_count} Daaras importés ou mis à jour avec succès.'})
-        except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        charge = rapport.en_dict()
+        if rapport.en_echec:
+            return Response(charge, status=status.HTTP_400_BAD_REQUEST)
+        return Response(charge)
 
 
 COMMUNITY_ROLES = (
@@ -472,7 +637,13 @@ class DirectoryUserViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = DirectoryUserSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [filters.SearchFilter]
-    search_fields = ['first_name', 'last_name', 'email', 'phone']
+    # `daara__name` : le collecteur connaît le Daara où il collecte — c'est la
+    # seule chose dont il soit certain face à deux homonymes. Sans ce champ,
+    # chercher « KANDE » rendait ZÉRO résultat, alors que `UserManagementViewSet`
+    # le cherchait déjà côté administration. L'écart n'avait aucune raison
+    # d'être : la recherche par Daara est utile là où l'on collecte, pas
+    # seulement là où l'on administre.
+    search_fields = ['first_name', 'last_name', 'email', 'phone', 'daara__name']
 
     def get_queryset(self):
         user = self.request.user

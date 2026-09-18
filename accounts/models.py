@@ -37,7 +37,31 @@ class CustomUserManager(BaseUserManager):
 
 
 class LDD(models.Model):
-    code = models.CharField(max_length=10, unique=True)
+    """Zone territoriale regroupant des Daaras.
+
+    ⚠ `code` N'EST PAS UNIQUE, ET NE PEUT PAS L'ÊTRE.
+
+    Il l'a été, par héritage : la spec initiale (`03_modeles_donnees.md`) ne
+    connaissait que les Daaras, avec un code unique, et la zone a été greffée
+    plus tard en recopiant cette contrainte sans la confronter aux données.
+
+    Or les fichiers de référence de la direction décrivent un code de
+    TERRITOIRE, que plusieurs zones se partagent :
+
+        DS S3  → TAWFEKH MBACKE · TOUBA RABBIYA AHMADOU · WASSILATOUL ROUBOUH
+        DS S17 → KAOLACK1 WADIEUKHTOU · KAOLACK2 WAKAANA
+        DS S10 → DIOURBEL RABBI · SERIGNE BETHIO MOY DEUG
+        DS AF  → DAWAMOU CHOUKRI RESTE AFRIQUE · SINDIDI GAMBIA
+
+    La contrainte a coûté cher : l'import résolvait la zone sur le seul code,
+    si bien que la deuxième zone d'un code se voyait remplacée par la première.
+    Quatre zones ont disparu et quarante-six Daaras se sont retrouvés classés
+    sous la mauvaise — KAOLACK2 versé dans KAOLACK1, entre autres.
+
+    C'est donc le COUPLE (code, nom) qui identifie une zone.
+    """
+
+    code = models.CharField(max_length=10, db_index=True)
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True, null=True)
     location = models.CharField(max_length=100, blank=True, null=True)
@@ -46,13 +70,23 @@ class LDD(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        unique_together = ('code', 'name')
+        # Le code seul ne départage pas deux zones : le nom tranche les ex æquo,
+        # sans quoi l'ordre d'une liste change d'un appel à l'autre.
+        ordering = ['code', 'name']
+
     def __str__(self):
         return f"{self.code} - {self.name}"
 
 
 class Daara(models.Model):
     name = models.CharField(max_length=100)
-    ldd = models.ForeignKey(LDD, on_delete=models.CASCADE, related_name='daaras')
+    # PROTECT, et non CASCADE : supprimer une zone emportait EN SILENCE tous
+    # ses Daaras, leurs adhésions, et détachait leurs membres. Une zone qui
+    # tient encore des Daaras doit d'abord les voir réaffectés — l'API le dit
+    # au lieu de l'exécuter.
+    ldd = models.ForeignKey(LDD, on_delete=models.PROTECT, related_name='daaras')
 
     chef = models.ForeignKey('accounts.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='daara_managed')
 
@@ -62,6 +96,10 @@ class Daara(models.Model):
 
     class Meta:
         unique_together = ('name', 'ldd')
+        # Le formulaire d'inscription déroule cette liste : 456 Daaras SANS
+        # ordre défini, rendus comme Postgres voulait bien les sortir. Un
+        # membre y cherchait le sien à l'œil, ligne par ligne.
+        ordering = ['name']
 
     def __str__(self):
         return f"{self.name} - {self.ldd.name}"
