@@ -135,7 +135,9 @@ class MemberTitle(models.Model):
 class User(AbstractUser):
     class Role(models.TextChoices):
         ADMIN = 'admin', _('Admin')
-        CHEF_DAARA = 'chef_daara', _('Chef Daara')
+        # Libellé seul : la valeur `chef_daara` reste la clé de toutes les
+        # permissions, du web et du mobile. Ne pas la renommer.
+        CHEF_DAARA = 'chef_daara', _('Coordinateur du Daara')
         COLLECTOR = 'collector', _('Collector')
         MEMBER = 'member', _('Member')
         TUTELLE = 'tutelle', _('Tutelle')
@@ -147,9 +149,11 @@ class User(AbstractUser):
         BLOCKED = 'blocked', _('Blocked')
 
     class Gender(models.TextChoices):
-        MALE = 'male', 'Male'
-        FEMALE = 'female', 'Female'
-        OTHER = 'other', 'Other'
+        # « Autre » a été retiré à la demande du client (réunion du
+        # 2026-10). Les comptes qui le portaient sont passés à NULL — « non
+        # renseigné » — par la migration 0016.
+        MALE = 'male', 'Homme'
+        FEMALE = 'female', 'Femme'
 
     class MaritalStatus(models.TextChoices):
         SINGLE = 'single', 'Single'

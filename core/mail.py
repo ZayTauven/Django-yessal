@@ -116,7 +116,7 @@ SUJETS = {
     'paiement_confirme':      "Votre paiement a été confirmé",
     'paiement_echoue':        "Votre paiement n'a pas abouti",
 
-    # ── Ndiguels et fêtes ──────────────────────────────────────────────────
+    # ── Ndiguels et événements (modèle `Fete`) ──────────────────────────────
     'ndiguel_responsable':    "Vous êtes responsable du Ndiguel {campagne}",
     'ndiguel_echeance':       "Le Ndiguel {campagne} se termine bientôt",
     'fete_date_modifiee':     "Nouvelle date pour {fete}",

@@ -114,7 +114,7 @@ ACTUALITES = [
      True),
     ("Préparatifs du Gamou — appel aux volontaires",
      "L'organisation du Gamou cherche des volontaires pour l'accueil, la "
-     "restauration et la logistique. Rapprochez-vous de votre chef de Daara.",
+     "restauration et la logistique. Rapprochez-vous du coordinateur de votre Daara.",
      "Appel aux volontaires pour l'accueil, la restauration et la logistique.",
      False),
 ]

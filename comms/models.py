@@ -305,7 +305,7 @@ class Announcement(models.Model):
     class TargetRole(models.TextChoices):
         ALL = 'all', _('All Roles')
         ADMIN = 'admin', _('Admin Only')
-        CHEF_DAARA = 'chef_daara', _('Chef Daara Only')
+        CHEF_DAARA = 'chef_daara', _('Coordinateurs du Daara uniquement')
         COLLECTOR = 'collector', _('Collector Only')
         MEMBER = 'member', _('Member Only')
 

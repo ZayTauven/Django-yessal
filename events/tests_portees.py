@@ -99,3 +99,96 @@ class Portees(TestCase):
         d = self.cli(self.talibe).get(f"/api/events/campaigns/{self.camp.id}/").data
         self.assertEqual(d["daara_name"], "KANDE")
         self.assertEqual(d["organizer_daara_name"], "GENDARMERIE")
+
+    def test_export_porte_la_zone_et_le_nom_complet_de_la_tutelle(self):
+        """L'export « Les contributions » réclamait deux données absentes.
+
+        - `beneficiary_name` ne rendait que le PRÉNOM de la tutelle :
+          « Tutelle - Sokhna » ne dit pas laquelle.
+        - La zone (LDD) du donateur n'était servie nulle part.
+        """
+        Donation.objects.create(campaign=self.camp, donor=self.talibe,
+                                beneficiary=self.tut, amount=2000)
+        d = self.cli(self.admin).get("/api/contributions/").data
+        rows = d.get("results", d) if isinstance(d, dict) else d
+        self.assertEqual(rows[0]["beneficiary_name"], "Sokhna Aida")
+        self.assertEqual(rows[0]["donor_ldd_name"], "Diourbel")
+
+    def test_export_sans_daara_ni_tutelle_ne_tombe_pas(self):
+        """Un donateur sans Daara rend `donor_ldd_name: null`, pas une erreur."""
+        sans = User.objects.create_user(email="s@t.sn", password="Motdepasse1!",
+                                         role="member", daara=None,
+                                         first_name="Sans", last_name="Daara", is_active=True)
+        Donation.objects.create(campaign=self.camp, donor=sans, amount=500)
+        d = self.cli(self.admin).get("/api/contributions/").data
+        rows = d.get("results", d) if isinstance(d, dict) else d
+        self.assertIsNone(rows[0]["donor_ldd_name"])
+        self.assertIsNone(rows[0]["beneficiary_name"])
+
+
+class NdiguelsTerminesHorsListe(TestCase):
+    """Un talibé ou une tutelle ne voit plus, EN LISTE, les Ndiguels terminés.
+
+    Demande du client (réunion d'octobre 2026). « Terminé » se lit comme
+    `Campaign.get_effective_status()` : statut `completed`, OU échéance passée.
+    Le DÉTAIL reste servi — une notification ou un lien partagé doit toujours
+    s'ouvrir — et l'administration, elle, voit tout.
+    """
+
+    URL = "/api/events/campaigns/"
+
+    def setUp(self):
+        ldd = LDD.objects.create(code="LDD1", name="Diourbel")
+        daara = Daara.objects.create(name="KANDE", ldd=ldd)
+
+        def creer(email, role):
+            return User.objects.create_user(
+                email=email, password="Motdepasse1!", role=role, daara=daara,
+                first_name=role, last_name="Test", is_active=True,
+            )
+
+        self.admin = creer("a@t.sn", "admin")
+        self.talibe = creer("m@t.sn", "member")
+        self.pupille = creer("t@t.sn", "tutelle")
+        self.collecteur = creer("c@t.sn", "collector")
+        self.chef = creer("ch@t.sn", "chef_daara")
+
+        demain = date.today() + timedelta(days=10)
+        hier = date.today() - timedelta(days=1)
+        self.ouvert = Campaign.objects.create(name="Ouvert", deadline=demain, status="active")
+        self.clos = Campaign.objects.create(name="Clos", deadline=demain, status="completed")
+        self.echu = Campaign.objects.create(name="Échu", deadline=hier, status="active")
+        # Échéance AUJOURD'HUI : encore ouvert (`get_effective_status` compare
+        # par « < aujourd'hui »).
+        self.dernier_jour = Campaign.objects.create(
+            name="Dernier jour", deadline=date.today(), status="active",
+        )
+
+    def cli(self, u):
+        c = APIClient(); c.force_authenticate(user=u); return c
+
+    def ids(self, u):
+        r = self.cli(u).get(self.URL)
+        self.assertEqual(r.status_code, 200)
+        rows = r.data.get("results", r.data) if isinstance(r.data, dict) else r.data
+        return {row["id"] for row in rows}
+
+    def test_talibe_et_tutelle_ne_voient_que_les_ouverts(self):
+        for u in (self.talibe, self.pupille):
+            self.assertEqual(
+                self.ids(u), {self.ouvert.id, self.dernier_jour.id},
+                f"{u.role} voit encore un Ndiguel terminé",
+            )
+
+    def test_le_detail_reste_accessible(self):
+        """Le filtre ne touche QUE la liste : un lien vers un Ndiguel clos
+        doit toujours s'ouvrir."""
+        for u in (self.talibe, self.pupille):
+            for camp in (self.clos, self.echu):
+                r = self.cli(u).get(f"{self.URL}{camp.id}/")
+                self.assertEqual(r.status_code, 200, f"{u.role} / {camp.name}")
+
+    def test_admin_et_encadrement_voient_tout(self):
+        tous = {self.ouvert.id, self.clos.id, self.echu.id, self.dernier_jour.id}
+        for u in (self.admin, self.chef, self.collecteur):
+            self.assertEqual(self.ids(u), tous, f"{u.role} a perdu des Ndiguels")

@@ -22,6 +22,10 @@ class Fete(models.Model):
 
     class Meta:
         ordering = ['name']
+        # Le client dit « Événement » ; le code garde `Fete` (modèle, table,
+        # route `/api/events/fetes/`). Seul le texte affiché change.
+        verbose_name = 'Événement'
+        verbose_name_plural = 'Événements'
 
     def __str__(self):
         return f"{self.name} ({self.get_recurrence_display()})"

@@ -482,7 +482,7 @@ class PilotageConfigView(APIView):
                 raise ValidationError("Vous n'êtes rattaché à aucune Daara.")
             cfg, _ = MessagingPilotageConfig.objects.get_or_create(daara=request.user.daara)
         else:
-            raise PermissionDenied("Seuls les administrateurs et chefs de Daara peuvent modifier la configuration.")
+            raise PermissionDenied("Seuls les administrateurs et les coordinateurs du Daara peuvent modifier la configuration.")
 
         serializer = MessagingPilotageConfigSerializer(cfg, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)

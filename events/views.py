@@ -178,6 +178,31 @@ class CampaignViewSet(viewsets.ModelViewSet):
     filter_backends = [filters.SearchFilter]
     search_fields = ['name', 'description', 'daara__name', 'fete__name']
 
+    # Rôles à qui la LISTE ne montre que les Ndiguels encore ouverts.
+    ROLES_SANS_NDIGUELS_TERMINES = (User.Role.MEMBER, User.Role.TUTELLE)
+
+    def get_queryset(self):
+        """Un talibé ou une tutelle ne voit plus, en liste, les Ndiguels terminés.
+
+        Demande du client (réunion du 2026-10) : un appel clos n'a plus rien à
+        proposer à qui ne fait que donner. Le filtre reproduit
+        `Campaign.get_effective_status()` : terminé = statut `completed`, OU
+        échéance passée. Un Ndiguel `inactive` dont l'échéance court encore
+        reste listé, comme avant — seul « terminé » est en cause.
+
+        ⚠ LA LISTE SEULEMENT. Le détail (`retrieve`) et les actions (`etat`)
+        restent servis : une notification, un Jëf ou un lien partagé pointe
+        vers un Ndiguel qui a pu se clore depuis, et doit toujours s'ouvrir.
+        """
+        qs = super().get_queryset()
+        role = getattr(self.request.user, 'role', None)
+        if self.action == 'list' and role in self.ROLES_SANS_NDIGUELS_TERMINES:
+            qs = (
+                qs.exclude(status=Campaign.Status.COMPLETED)
+                .exclude(deadline__lt=timezone.localdate())
+            )
+        return qs
+
     def get_serializer_context(self):
         context = super().get_serializer_context()
         context['request'] = self.request

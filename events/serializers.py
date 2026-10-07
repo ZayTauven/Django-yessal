@@ -128,5 +128,5 @@ class CampaignSerializer(serializers.ModelSerializer):
         if value is None:
             return value
         if value.role not in ['member', 'collector', 'chef_daara']:
-            raise serializers.ValidationError('Le responsable doit être un membre, un collecteur ou un chef de Daara.')
+            raise serializers.ValidationError('Le responsable doit être un membre, un collecteur ou un coordinateur du Daara.')
         return value

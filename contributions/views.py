@@ -68,7 +68,10 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        base = Donation.objects.select_related('campaign', 'donor', 'collector', 'target_daara', 'archive_id')
+        base = Donation.objects.select_related(
+            'campaign', 'donor', 'donor__daara__ldd', 'collector', 'target_daara', 'archive_id',
+            'beneficiary',
+        )
 
         # 1. Portée autorisée par le rôle.
         #

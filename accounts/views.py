@@ -675,7 +675,7 @@ class DirectoryUserViewSet(viewsets.ReadOnlyModelViewSet):
 
         if request.user.role != User.Role.CHEF_DAARA:
             return Response(
-                {'detail': 'Seuls le chef de Daara ou un administrateur peuvent nommer un collecteur.'},
+                {'detail': 'Seuls le coordinateur du Daara ou un administrateur peuvent nommer un collecteur.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
         if not request.user.daara_id:

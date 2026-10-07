@@ -97,7 +97,7 @@ notify(
 ```
 
 `notify_many()` pour les envois de masse (annonces critiques, changement de
-date de fête) : un seul `bulk_create`, une seule connexion SMTP, dans un fil
+date d'événement) : un seul `bulk_create`, une seule connexion SMTP, dans un fil
 séparé. `core.mail.send_to_user()` directement quand aucune notification en
 base n'a de sens — l'accusé d'inscription, par exemple, arrive avant que le
 compte soit actif.
@@ -159,7 +159,7 @@ compte soit actif.
 > L'accès à votre compte Yessal Gui a été suspendu par un administrateur.
 >
 > Vos Jëfs déjà enregistrés sont conservés et restent comptabilisés. Si vous
-> pensez qu'il s'agit d'une erreur, rapprochez-vous du chef de votre Daara.
+> pensez qu'il s'agit d'une erreur, rapprochez-vous du coordinateur de votre Daara.
 
 **Variables** `user`, `prenom`, `daara`, `motif` (optionnel — champ à ajouter)
 
@@ -412,7 +412,7 @@ appelé depuis `resetMemberPasswordAction`
 ## D2 · `jef_a_collecter` ● existe
 
 **Déclencheur** `notify_for_collector_payment` — [`contributions/signals.py:10`](../contributions/signals.py#L10)
-**Destinataire** collecteurs et chef du Daara, plus les administrateurs
+**Destinataire** collecteurs et coordinateur du Daara, plus les administrateurs
 **Objet** `Un Jëf est à collecter`
 
 > **{membre}** a enregistré un Jëf de **{montant} FCFA** pour le Ndiguel
@@ -528,7 +528,7 @@ appelé depuis `resetMemberPasswordAction`
 
 ---
 
-# E. Ndiguels et fêtes
+# E. Ndiguels et événements
 
 ## E1 · `ndiguel_responsable` ● existe
 
@@ -573,13 +573,16 @@ appelé depuis `resetMemberPasswordAction`
 
 ## E3 · `fete_date_modifiee` ● existe
 
+*Le client dit « événement » ; le code garde `fete` (modèle `Fete`, code du
+courriel, variable `{fete}`, route `/api/events/fetes/`).*
+
 **Déclencheur** `FeteViewSet.perform_update`, quand la date change — [`events/views.py:57`](../events/views.py#L57)
 **Destinataire** tous les membres actifs *(envoi de masse)*
 **Objet** `Nouvelle date pour {fete}`
 
 > Bonjour {prenom},
 >
-> La date de **{fete}** a été fixée au **{date}**.
+> La date de l’événement **{fete}** a été fixée au **{date}**.
 >
 > [**Voir les Ndiguels liés**]
 
