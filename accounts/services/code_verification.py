@@ -21,7 +21,7 @@ from django.contrib.auth.hashers import check_password, make_password
 from django.utils import timezone
 
 from accounts.models import CodeVerification
-from core.mail import send_to_user
+from core.mail import adresse_distribuable, send_to_user
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +39,23 @@ class CodeRefuse(Exception):
     """Le code est faux, expiré, épuisé ou déjà servi. Le message se montre."""
 
 
-def emettre(user, objet: str) -> None:
-    """Crée un code et l'envoie. Lève `CodeRefuse` si l'envoi est impossible."""
+def emettre(user, objet: str) -> bool:
+    """Crée un code et l'envoie. Renvoie True si le courriel est parti.
+
+    Hors DEBUG, un envoi raté lève `CodeRefuse`. En DEBUG, il renvoie False :
+    le code est dans le journal, et l'appelant doit le DIRE — l'écran
+    annonçait « Un code a été envoyé » pour un courriel jamais parti (Z2).
+    """
     if objet not in OBJETS:
         raise ValueError(f"Objet de code inconnu : {objet}")
     if not user.email:
         raise CodeRefuse(
             "Votre compte n'a pas d'adresse e-mail : le code ne peut pas vous être envoyé."
+        )
+    if not settings.DEBUG and not adresse_distribuable(user.email):
+        raise CodeRefuse(
+            f"{user.email} est une adresse de test : aucun courriel n'y part. "
+            "Renseignez une vraie adresse dans votre profil."
         )
 
     maintenant = timezone.now()
@@ -71,6 +81,7 @@ def emettre(user, objet: str) -> None:
     })
     if not envoye and not settings.DEBUG:
         raise CodeRefuse("Le courriel n'a pas pu partir. Réessayez dans un instant.")
+    return envoye
 
 
 def verifier(user, objet: str, code: str) -> None:

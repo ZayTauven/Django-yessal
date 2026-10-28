@@ -168,6 +168,44 @@ class EnvoiDeMasseTests(TestCase):
         send_to_users([self.sans], 'fete_date_modifiee', contexte={})
         self.assertEqual(len(django_mail.outbox), 0)
 
+    @override_settings(EMAIL_BLOCKED_DOMAINS={'yessal.sn'})
+    def test_les_adresses_de_test_sont_ecartees(self):
+        """Z6 : chaque adresse de démo revenait en rejet dans la boîte expéditrice."""
+        import threading
+
+        demo = [
+            User.objects.create_user(email=adresse, password='Test1234!', role=User.Role.MEMBER)
+            for adresse in ('fatou@demo.yessal.local', 'omar@Yessal.SN', 'x@site.test')
+        ]
+        with patch('core.mail._rendu', return_value=('<p>x</p>', 'x')):
+            send_to_users(self.avec + demo, 'fete_date_modifiee',
+                          contexte={'fete': 'Magal', 'date': '01/01/2027'})
+            for fil in threading.enumerate():
+                if fil.name.startswith('mail-'):
+                    fil.join(timeout=10)
+
+        self.assertEqual(len(django_mail.outbox), 3)
+
+
+@COURRIEL_ACTIF
+class AdresseDistribuableTests(TestCase):
+    @override_settings(EMAIL_BLOCKED_DOMAINS={'yessal.sn'})
+    def test_envoi_unitaire_vers_un_domaine_de_test(self):
+        for adresse in ('awa@demo.yessal.local', 'omar@yessal.sn', 'a@localhost'):
+            with self.subTest(adresse=adresse):
+                membre = User.objects.create_user(email=adresse, password='Test1234!',
+                                                  role=User.Role.MEMBER)
+                self.assertFalse(send_to_user(membre, 'compte_valide', {}))
+        self.assertEqual(len(django_mail.outbox), 0)
+
+    def test_regles(self):
+        from core.mail import adresse_distribuable
+
+        self.assertTrue(adresse_distribuable('kasigroupe21@gmail.com'))
+        self.assertTrue(adresse_distribuable('contact@yessalgui.sn'))
+        self.assertFalse(adresse_distribuable('sans-arobase'))
+        self.assertFalse(adresse_distribuable('papice@yessal.ss'))  # défaut des réglages
+
 
 class CatalogueTests(TestCase):
     """Le catalogue documenté et le module doivent rester alignés."""

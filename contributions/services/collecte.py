@@ -18,6 +18,20 @@ from django.contrib.auth import get_user_model
 from accounts.models import PilotageSettings
 
 
+def est_geographique(ldd) -> bool:
+    """Faux pour les LDD qui ne désignent pas un territoire.
+
+    Arbitrage du 2026-10-28 : « DS S27 INDIVIDUELS » regroupe les membres sans
+    Daara, d'où qu'ils soient, et « DEFAULT » est le choix des comptes hors
+    Kourel. Les compter parmi les « zones sans collecteur » faisait croire à
+    un trou de couverture que personne ne peut combler.
+    """
+    return not (
+        (ldd.code or '').strip().upper() == 'DEFAULT'
+        or 'INDIVIDUEL' in (ldd.name or '').upper()
+    )
+
+
 def collecte_active() -> bool:
     return PilotageSettings.load().collecte_physique_active
 

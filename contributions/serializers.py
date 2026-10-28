@@ -53,6 +53,20 @@ class DonationSerializer(serializers.ModelSerializer):
             )
         return value
 
+    def validate_campaign(self, value):
+        # Décision du porteur, 2026-10-28 (Z4) : un Ndiguel clos ne reçoit plus
+        # AUCUN nouveau Jëf, collecteur compris — la collecte physique en
+        # proposait encore, à part. Les demandes ouvertes AVANT la clôture
+        # restent encaissables (`collect`) et remissibles : elles ne passent
+        # pas par ici.
+        from events.models import Campaign
+
+        if value and value.get_effective_status() == Campaign.Status.COMPLETED:
+            raise serializers.ValidationError(
+                f"Le Ndiguel « {value.name} » est clôturé : il n'accepte plus de Jëf."
+            )
+        return value
+
     def validate_payment_method(self, value):
         if value not in Donation.CURRENT_METHODS:
             raise serializers.ValidationError("Ce moyen de paiement n'est plus proposé.")

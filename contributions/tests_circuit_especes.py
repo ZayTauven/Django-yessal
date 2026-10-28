@@ -154,6 +154,18 @@ class DemandeEtEncaissementTests(CircuitEspecesBase):
         self.assertTrue(Notification.objects.filter(user=self.member, title='Jëf encaissé').exists())
         self.assertFalse(Notification.objects.filter(title__icontains='récolter').exists())
 
+    def test_le_recu_n_a_pas_l_objet_de_la_demande(self):
+        """Le membre recevait deux « Votre Jëf a bien été enregistré » d'affilée."""
+        from django.core import mail as django_mail
+
+        r = self.creer(self.member)
+        django_mail.outbox = []
+        self.client.force_authenticate(self.collector)
+        self.client.post(f"{self.list_url}{r.data['id']}/collect/")
+        recus = [m for m in django_mail.outbox if m.to == [self.member.email]]
+        self.assertEqual([m.subject for m in recus], ["Moussa Sarr a reçu votre Jëf"])
+        self.assertIn(f"REF-{r.data['id']}", recus[0].body)
+
     def test_relais_member_id_des_anciennes_versions_mobiles(self):
         r = self.creer(self.collector, member_id=self.member.id)
         d = Donation.objects.get(pk=r.data['id'])

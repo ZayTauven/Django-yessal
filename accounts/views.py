@@ -1523,10 +1523,20 @@ class PilotageSettingsViewSet(viewsets.ViewSet):
                 {'detail': "La collecte est déjà dans cet état."}, status=status.HTTP_400_BAD_REQUEST,
             )
         try:
-            emettre(request.user, self._objet_code(active))
+            envoye = emettre(request.user, self._objet_code(active))
         except CodeRefuse as e:
             return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        return Response({'detail': f"Un code a été envoyé à {request.user.email}. Il est valable 10 minutes."})
+        if not envoye:
+            # DEBUG seulement : hors DEBUG, `emettre` a déjà levé.
+            return Response({
+                'detail': "Le courriel n'est pas parti (mode DEBUG) : le code est écrit "
+                          "dans le journal du serveur.",
+                'envoye': False,
+            })
+        return Response({
+            'detail': f"Un code a été envoyé à {request.user.email}. Il est valable 10 minutes.",
+            'envoye': True,
+        })
 
     @action(detail=False, methods=['post'], url_path='collecte')
     def collecte(self, request):
@@ -1659,7 +1669,13 @@ class CollecteurViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=['get'])
     def couverture(self, request):
-        """Chaque zone et ses collecteurs actifs : une zone à 0 n'a pas d'option « Collecteur »."""
+        """Chaque zone et ses collecteurs actifs : une zone à 0 n'a pas d'option « Collecteur ».
+
+        `geographique` : faux pour INDIVIDUELS et DEFAULT, que l'écran ne compte
+        pas parmi les zones à couvrir.
+        """
+        from contributions.services.collecte import est_geographique
+
         zones = (
             LDD.objects.filter(is_active=True)
             .annotate(collecteurs_actifs=Count(
@@ -1671,7 +1687,8 @@ class CollecteurViewSet(viewsets.ViewSet):
             .order_by('code', 'name')
         )
         return Response([
-            {'id': z.id, 'code': z.code, 'nom': z.name, 'collecteurs': z.collecteurs_actifs}
+            {'id': z.id, 'code': z.code, 'nom': z.name, 'collecteurs': z.collecteurs_actifs,
+             'geographique': est_geographique(z)}
             for z in zones
         ])
 

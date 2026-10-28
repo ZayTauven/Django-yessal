@@ -579,6 +579,27 @@ suspension ou la reprise de la collecte en espèces (Pilotage › Collecteurs)
 
 ---
 
+## D9 · `jef_encaisse` ● branché
+
+**Déclencheur** `_accuser_encaissement`, appelé par `DonationViewSet.collect`
+et par `perform_create` (espèces saisies pour autrui) — [`contributions/views.py`](../contributions/views.py)
+**Destinataire** le membre qui a remis ses espèces
+**Objet** `{collecteur} a reçu votre Jëf`
+
+> **{collecteur}** a reçu en main propre votre Jëf de **{montant} FCFA** pour
+> le Ndiguel **{campagne}**. Ce courriel est votre reçu : gardez-le.
+>
+> **Reçu par :** {collecteur} · **Le :** {date} · **Référence :** {reference}
+> · **Statut :** {statut}
+
+**Variables** `prenom`, `donation`, `montant`, `campagne`, `collecteur`,
+`date`, `reference`, `statut`, `base_url`
+
+> Partait sous `jef_enregistre` jusqu'au 2026-10-28 : même objet que la
+> demande, le membre ne distinguait pas le reçu de l'accusé de demande.
+
+---
+
 # E. Ndiguels et événements
 
 ## E1 · `ndiguel_responsable` ● existe

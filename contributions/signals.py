@@ -2,7 +2,7 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.contrib.auth import get_user_model
 from .models import Donation
-from comms.notify import notify, nom_de
+from comms.notify import notify_many, nom_de
 
 User = get_user_model()
 
@@ -56,13 +56,15 @@ def notify_for_collector_payment(sender, instance, created, **kwargs):
             'telephone': donor.phone or '',
         }
 
-        for destinataire in recipients:
-            if destinataire == donor:
-                continue
-            notify(
-                destinataire,
-                code='jef_a_collecter',
-                titre=titre,
-                message=message,
-                contexte=contexte,
-            )
+        # En masse, hors requête : envoyés un par un, les courriels aux
+        # collecteurs tenaient l'écran du membre sur « Traitement… » (16 s
+        # mesurées le 2026-10-28), et son propre accusé partait en dernier.
+        # `push=True` : `bulk_create` ne déclenche pas le push du signal.
+        notify_many(
+            [u for u in recipients if u != donor],
+            code='jef_a_collecter',
+            titre=titre,
+            message=message,
+            contexte=contexte,
+            push=True,
+        )

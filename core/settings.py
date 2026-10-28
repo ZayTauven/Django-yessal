@@ -528,6 +528,19 @@ EMAIL_REPLY_TO = config('EMAIL_REPLY_TO', default='')
 # aurait été envoyé.
 EMAIL_ENABLED = config('EMAIL_ENABLED', default=True, cast=bool)
 
+# Domaines des comptes de test saisis à la main. Ce sont de VRAIS domaines
+# (yessal.sn et yessal.com ont des serveurs de courrier chez OVH) qui
+# n'appartiennent pas au Kourel — le sien est yessalgui.sn. Chaque envoi y
+# revenait en « Adresse introuvable » dans la boîte expéditrice : des dizaines
+# par courriel de masse, de quoi dégrader la réputation du compte Gmail. Les
+# domaines réservés (`.local`, `.test`…) sont exclus dans `core/mail.py`, sans
+# réglage. Liste vide dans l'environnement = aucune exclusion supplémentaire.
+EMAIL_BLOCKED_DOMAINS = {
+    d.strip().lower().lstrip('@')
+    for d in config('EMAIL_BLOCKED_DOMAINS', default='yessal.sn,yessal.ss,yessal.com').split(',')
+    if d.strip()
+}
+
 # URL publique du front, pour les liens envoyés par courriel.
 BASE_URL = config('BASE_URL', default='http://localhost:3000')
 

@@ -64,23 +64,30 @@ def _accuser_encaissement(donation):
     C'est le moment où le cahier ne protégeait personne : le membre remettait
     ses billets et repartait sans trace. Il est prévenu dans l'application,
     par push, et par courriel s'il a une adresse.
+
+    Son propre gabarit : il partait sous `jef_enregistre`, avec l'objet de la
+    demande — le membre recevait deux « Votre Jëf a bien été enregistré »
+    d'affilée et ne pouvait pas reconnaître le reçu.
     """
     montant = montant_lisible(donation.amount)
     campagne = donation.campaign.name if donation.campaign else ''
+    collecteur = nom_de(donation.collector)
     notify(
         donation.donor,
-        code='jef_enregistre',
+        code='jef_encaisse',
         titre='Jëf encaissé',
         message=(
-            f"{nom_de(donation.collector)} a reçu votre Jëf de {montant} FCFA "
+            f"{collecteur} a reçu votre Jëf de {montant} FCFA "
             f"pour « {campagne} ». Il sera confirmé dès sa remise à l'administration."
         ),
         contexte={
             'donation': donation,
             'montant': montant,
             'campagne': campagne,
-            'mode_paiement': donation.get_payment_method_display(),
-            'statut': f"{donation.get_payment_status_display()} ({nom_de(donation.collector)})",
+            'collecteur': collecteur,
+            'date': timezone.localtime(donation.collected_at or timezone.now()).strftime('%d/%m/%Y à %Hh%M'),
+            'reference': f'REF-{donation.pk}',
+            'statut': "Encaissé, en attente de remise",
         },
     )
 
@@ -567,9 +574,24 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
                 return Response({'detail': "Cette demande n'est pas prise en charge."}, status=status.HTTP_400_BAD_REQUEST)
             if donation.collector_id != request.user.pk and request.user.role != 'admin':
                 raise PermissionDenied("Seul le collecteur qui s'en charge peut la relâcher.")
+            ancien = donation.collector
             donation.collector = None
             donation.claimed_at = None
             donation.save(update_fields=['collector', 'claimed_at', 'updated_at'])
+
+        # Le membre gardait « Fatou s'occupe de votre Jëf » sans correctif, et
+        # attendait un appel qui ne viendrait pas.
+        notify(
+            donation.donor,
+            code='jef_pris_en_charge',
+            titre='Votre collecteur ne peut plus venir',
+            message=(
+                f"{nom_de(ancien)} ne peut plus s'occuper de votre Jëf de "
+                f"{montant_lisible(donation.amount)} FCFA. Votre demande reste "
+                f"ouverte : un autre collecteur de votre zone vous contactera."
+            ),
+            courriel=False,
+        )
         return Response(DonationSerializer(donation).data)
 
     @action(detail=False, methods=['get'])

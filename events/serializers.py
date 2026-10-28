@@ -21,6 +21,10 @@ class CampaignTodoSerializer(serializers.ModelSerializer):
 
 class CampaignSerializer(serializers.ModelSerializer):
     collected_amount = serializers.SerializerMethodField()
+    # Tous statuts confondus : c'est ce que compte `destroy` pour refuser la
+    # suppression. La fenêtre de confirmation le dit AVANT le clic, au lieu
+    # d'annoncer des Jëfs « supprimés » que le serveur protège.
+    jefs_count = serializers.SerializerMethodField()
     todos = serializers.SerializerMethodField()
     organizer_name = serializers.SerializerMethodField()
     organizer_role = serializers.CharField(source='organizer.role', read_only=True)
@@ -85,6 +89,7 @@ class CampaignSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
             'collected_amount',
+            'jefs_count',
             'todos',
             'is_manageable',
             'days_remaining',
@@ -95,6 +100,9 @@ class CampaignSerializer(serializers.ModelSerializer):
 
     def get_collected_amount(self, obj):
         return obj.donations.filter(payment_status='confirmed').aggregate(total=Sum('amount'))['total'] or 0
+
+    def get_jefs_count(self, obj):
+        return obj.donations.count()
 
     def get_todos(self, obj):
         request = self.context.get('request')

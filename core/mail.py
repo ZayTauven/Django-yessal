@@ -112,6 +112,7 @@ SUJETS = {
     # ── Jëfs ───────────────────────────────────────────────────────────────
     'jef_enregistre':         "Votre Jëf a bien été enregistré",
     'jef_a_collecter':        "Un Jëf est à collecter",
+    'jef_encaisse':           "{collecteur} a reçu votre Jëf",
     'virement_instructions':  "Comment effectuer votre virement",
     'virement_confirme':      "Votre virement a été confirmé",
     'paiement_confirme':      "Votre paiement a été confirmé",
@@ -258,6 +259,30 @@ def _contexte_commun(contexte: dict | None) -> dict:
     return complet
 
 
+# Domaines de premier niveau où aucun serveur ne reçoit de courrier (RFC 2606,
+# RFC 6761, et `.internal` réservé par l'ICANN). Les comptes de démonstration
+# vivent sous `demo.yessal.local` (`seed_demo`) : sans ce filtre, chaque
+# courriel de masse leur écrivait, et Gmail renvoyait un rejet par compte à
+# l'expéditeur. `example.com` n'y figure pas : les tests s'en servent avec le
+# backend en mémoire.
+_SUFFIXES_RESERVES = ('.local', '.localhost', '.test', '.example', '.invalid', '.internal')
+
+
+def adresse_distribuable(adresse: str) -> bool:
+    """Faux pour une adresse qui ne peut que revenir en rejet.
+
+    Ne vérifie pas que la boîte existe — seulement que le domaine n'est ni
+    réservé, ni exclu par `EMAIL_BLOCKED_DOMAINS`. Un rejet, c'est un point
+    de réputation perdu pour l'expéditeur : mieux vaut ne pas tenter.
+    """
+    _, arobase, domaine = (adresse or '').strip().lower().rpartition('@')
+    if not arobase or not domaine:
+        return False
+    if domaine == 'localhost' or domaine.endswith(_SUFFIXES_RESERVES):
+        return False
+    return domaine not in settings.EMAIL_BLOCKED_DOMAINS
+
+
 def _expediteur() -> str:
     return f'{settings.EMAIL_FROM_NAME} <{settings.DEFAULT_FROM_EMAIL}>'
 
@@ -288,6 +313,11 @@ def send_to_user(user, code: str, contexte: dict | None = None) -> bool:
         # par téléphone. En DEBUG seulement, pour ne pas noyer la production.
         logger.debug("Courriel %r ignoré : le membre #%s n'a pas d'adresse.",
                      code, getattr(user, 'pk', '?'))
+        return False
+
+    if not adresse_distribuable(adresse):
+        logger.info("Courriel %r ignoré : %s n'est pas distribuable (domaine de test).",
+                    code, adresse)
         return False
 
     contexte = _contexte_commun(contexte)
@@ -324,6 +354,11 @@ def send_to_users(users, code: str, contexte_pour=None, contexte: dict | None = 
         for u in users
     ]
     destinataires = [(u, a) for u, a in destinataires if a]
+    ecartes = [a for _, a in destinataires if not adresse_distribuable(a)]
+    if ecartes:
+        destinataires = [(u, a) for u, a in destinataires if adresse_distribuable(a)]
+        logger.info("Courriel de masse %r : %d adresse(s) de test écartée(s).",
+                    code, len(ecartes))
 
     if not destinataires:
         logger.info("Courriel de masse %r : aucun destinataire avec adresse.", code)

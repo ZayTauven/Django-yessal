@@ -132,6 +132,11 @@ class PriseEnChargeTests(ZonesBase):
         self.assertEqual(self.client.post(self.url(d, 'release')).status_code, 200)
         d.refresh_from_db()
         self.assertIsNone(d.collector)
+        # Z5 : le membre attendait un appel qui ne viendrait pas.
+        self.assertTrue(Notification.objects.filter(
+            user=self.membre_dakar, title='Votre collecteur ne peut plus venir',
+            message__startswith='Moussa',
+        ).exists())
 
 
 @patch('accounts.services.code_verification.secrets.randbelow', return_value=CODE)
@@ -187,6 +192,18 @@ class InterrupteurTests(ZonesBase):
         self.client.post(self.reglages, {'collecte_physique_active': False}, format='json')
         self.assertTrue(PilotageSettings.load().collecte_physique_active)
 
+    def test_en_debug_un_code_non_parti_est_signale(self, _):
+        """Z2 : l'écran annonçait « Un code a été envoyé » pour un courriel jamais parti."""
+        self.client.force_authenticate(self.admin)
+        url = f"{self.reglages}collecte/code/"
+        with patch('accounts.services.code_verification.send_to_user', return_value=False):
+            with self.settings(DEBUG=True):
+                r = self.client.post(url, {'active': False}, format='json')
+            self.assertEqual((r.status_code, r.data['envoye']), (200, False))
+            self.assertIn("n'est pas parti", r.data['detail'])
+
+            self.assertEqual(self.client.post(url, {'active': False}, format='json').status_code, 400)
+
     def test_reserve_aux_admins(self, _):
         self.client.force_authenticate(self.col_dakar)
         r = self.client.post(f"{self.reglages}collecte/code/", {'active': False}, format='json')
@@ -211,9 +228,17 @@ class GestionCollecteursTests(ZonesBase):
         # Paris est désormais couvert : Aïda peut demander une collecte.
         self.assertEqual(self.creer(self.membre_paris).status_code, 201)
 
+    def test_individuels_et_default_ne_sont_pas_des_zones_a_couvrir(self):
+        LDD.objects.create(code='DS S27', name='INDIVIDUELS')
+        LDD.objects.create(code='DEFAULT', name='LDD par défaut')
+        self.client.force_authenticate(self.admin)
+        geo = {z['code']: z['geographique'] for z in self.client.get('/api/collecteurs/couverture/').data}
+        self.assertEqual(geo, {'DS S1': True, 'DS FR2': True, 'DS S27': False, 'DEFAULT': False})
+
 
 class ClotureTests(ZonesBase):
-    """Décision du 2026-10-28 : la clôture n'arrête pas les collecteurs, mais
+    """Décisions du 2026-10-28 : un Ndiguel clos ne reçoit plus de nouveau Jëf
+    (Z4), mais ce qui a été demandé avant reste encaissable, et
     l'administration est prévenue des espèces restées en route."""
 
     titre = 'Ndiguel clôturé avec des espèces en route'
@@ -227,9 +252,21 @@ class ClotureTests(ZonesBase):
         self.assertEqual(r.status_code, 200, r.data)
         self.assertTrue(Notification.objects.filter(user=self.admin, title__startswith=self.titre).exists())
 
-        # Le collecteur encaisse toujours ce qui a été promis avant.
+        # Le collecteur encaisse toujours ce qui a été promis avant…
         self.client.force_authenticate(self.col_dakar)
         self.assertEqual(self.client.post(self.url(d, 'collect')).status_code, 200)
+
+    def test_un_ndiguel_clos_ne_recoit_plus_de_jef(self):
+        """Z4 : la collecte physique proposait encore les Ndiguels terminés."""
+        from datetime import timedelta
+
+        self.campaign.deadline = timezone.now().date() - timedelta(days=1)
+        self.campaign.save()
+        r = self.creer(self.col_dakar, donor=self.membre_dakar.id)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('campaign', r.data)
+        self.assertEqual(self.creer(self.membre_dakar, payment_method='wave').status_code, 400)
+        self.assertFalse(Donation.objects.exists())
 
     def test_rien_en_route_rien_a_dire(self):
         self.client.force_authenticate(self.admin)
