@@ -35,6 +35,7 @@ class IntegriteBase(APITestCase):
         self.fete = Fete.objects.create(name='Magal', date=timezone.now().date(), recurrence=Fete.Recurrence.ANNUAL)
         self.campaign = Campaign.objects.create(
             name='Ndiguel', deadline=timezone.now().date(), fete=self.fete, created_by=self.admin,
+            status=Campaign.Status.ACTIVE,
         )
         Donation.objects.create(
             campaign=self.campaign, donor=self.membre, amount=5000, payment_status='confirmed',

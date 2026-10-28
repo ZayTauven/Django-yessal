@@ -1060,7 +1060,7 @@ class AnalyticsViewSet(viewsets.ViewSet):
         elif role == 'chef_daara':
             daara_members = User.objects.filter(daara=user.daara, status='active').count() if user.daara else 0
             kpis.append({'title': 'Total Daara', 'value': f'{int(total_amount):,} FCFA', 'change': change_amount, 'icon': 'Wallet'})
-            kpis.append({'title': 'Talibés', 'value': str(daara_members), 'change': 'Actifs', 'icon': 'Users'})
+            kpis.append({'title': 'Talubés', 'value': str(daara_members), 'change': 'Actifs', 'icon': 'Users'})
             kpis.append({'title': 'Contributions', 'value': str(donation_count), 'change': change_count, 'icon': 'HandCoins'})
             kpis.append({'title': 'Jëfs Actifs', 'value': str(active_campaigns_count), 'change': 'En cours', 'icon': 'Landmark'})
         elif role == 'collector':

@@ -38,6 +38,7 @@ class WebhookBictorysAuthTests(APITestCase):
         self.fete = Fete.objects.create(name='Magal', date='2026-01-01')
         self.campaign = Campaign.objects.create(
             name='Ndiguel Magal',
+            status=Campaign.Status.ACTIVE,
             fete=self.fete,
             goal_amount=100000,
             deadline='2026-12-31',

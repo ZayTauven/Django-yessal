@@ -20,7 +20,7 @@ from .serializers import CampaignSerializer, CampaignTodoSerializer, FeteSeriali
 # Qui peut LANCER un Ndiguel
 # ═══════════════════════════════════════════════════════════════════════════
 # 🔴 CORRIGÉ LE 2026-09-06. La liste valait
-# `('admin', 'chef_daara', 'collector', 'member')` : n'importe quel talibé
+# `('admin', 'chef_daara', 'collector', 'member')` : n'importe quel talubé
 # pouvait ouvrir un appel aux dons au nom de la confrérie.
 #
 # La règle métier ne l'a jamais permis. `AGENTS/tools/05_use_cases_regles.md`,
@@ -209,7 +209,7 @@ class CampaignViewSet(viewsets.ModelViewSet):
         return super().destroy(request, *args, **kwargs)
 
     def get_queryset(self):
-        """Un talibé ou une tutelle ne voit plus, en liste, les Ndiguels terminés.
+        """Un talubé ou une tutelle ne voit plus, en liste, les Ndiguels terminés.
 
         Demande du client (réunion du 2026-10) : un appel clos n'a plus rien à
         proposer à qui ne fait que donner. Le filtre reproduit
@@ -367,7 +367,7 @@ class CampaignTodoViewSet(viewsets.ModelViewSet):
         n'examine que le rôle pour l'action `create`, et
         `has_object_permission` ne s'exécute JAMAIS sur une création — il n'y a
         pas encore d'objet. Or `CAMPAIGN_CREATOR_ROLES` inclut `member` :
-        n'importe quel talibé pouvait donc écrire une tâche dans le Ndiguel de
+        n'importe quel talubé pouvait donc écrire une tâche dans le Ndiguel de
         n'importe qui, y compris d'un autre Daara, et le serveur répondait 201.
 
         Deux conséquences, constatées le 2026-09-05 en éprouvant le contrat :

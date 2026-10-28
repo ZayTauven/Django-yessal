@@ -52,6 +52,7 @@ class CircuitEspecesBase(APITestCase):
         )
         self.campaign = Campaign.objects.create(
             name='Ndiguel Magal', deadline=timezone.now().date(), fete=fete,
+            status=Campaign.Status.ACTIVE,
             daara=self.daara, created_by=self.admin,
         )
         self.list_url = reverse('donations-list')

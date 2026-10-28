@@ -46,6 +46,7 @@ class ZonesBase(APITestCase):
         fete = Fete.objects.create(name='Magal', date=timezone.now().date(), recurrence=Fete.Recurrence.ANNUAL)
         self.campaign = Campaign.objects.create(
             name='Ndiguel', deadline=timezone.now().date(), fete=fete, created_by=self.admin,
+            status=Campaign.Status.ACTIVE,
         )
         self.list_url = reverse('donations-list')
 
@@ -266,6 +267,19 @@ class ClotureTests(ZonesBase):
         self.assertEqual(r.status_code, 400)
         self.assertIn('campaign', r.data)
         self.assertEqual(self.creer(self.membre_dakar, payment_method='wave').status_code, 400)
+        self.assertFalse(Donation.objects.exists())
+
+    def test_a_venir_ou_suspendu_ne_recoit_pas_de_jef(self):
+        """Le mobile les refusait, le web et le serveur les acceptaient."""
+        for statut, mot in ((Campaign.Status.PENDING, 'pas encore ouvert'),
+                            (Campaign.Status.INACTIVE, 'suspendu')):
+            with self.subTest(statut=statut):
+                self.campaign.status = statut
+                self.campaign.save()
+                r = self.creer(self.membre_dakar, payment_method='wave')
+                self.assertEqual(r.status_code, 400)
+                self.assertIn(mot, str(r.data['campaign']))
+                self.assertEqual(self.creer(self.col_dakar, donor=self.membre_dakar.id).status_code, 400)
         self.assertFalse(Donation.objects.exists())
 
     def test_rien_en_route_rien_a_dire(self):

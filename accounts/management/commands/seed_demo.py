@@ -76,7 +76,7 @@ FETES = [
     ("Ziar de fin d'année", "annual", -30, "Visite collective et prières de clôture."),
     ("Tog Ajumma", "weekly", 5, "Rassemblement hebdomadaire du vendredi."),
     ("Kazu Rajab", "annual", 45, "Commémoration du mois de Rajab."),
-    ("Journée du Talibé", "annual", 150, "Journée dédiée aux talibés des Daaras."),
+    ("Journée du Talubé", "annual", 150, "Journée dédiée aux talubés des Daaras."),
 ]
 
 # (nom, statut, objectif, jours avant/après l'échéance, description)
@@ -85,7 +85,7 @@ NDIGUELS = [
      "Sécuriser l'enceinte du Daara principal avant l'hivernage."),
     ("Réfection de la grande salle", "active", 2_500_000, 75,
      "Toiture et sol de la salle de rassemblement."),
-    ("Fournitures scolaires des talibés", "completed", 1_200_000, -20,
+    ("Fournitures scolaires des talubés", "completed", 1_200_000, -20,
      "Cahiers, ardoises et tenues pour la rentrée."),
     ("Forage du puits communautaire", "pending", 8_000_000, 120,
      "Accès à l'eau potable pour le Daara et son voisinage."),
@@ -256,7 +256,7 @@ class Command(BaseCommand):
             if fixed != user.email and not User.objects.filter(email=fixed).exists():
                 User.objects.filter(pk=user.pk).update(email=fixed)
 
-        # Deux chefs, trois collecteurs, le reste en talibés.
+        # Deux chefs, trois collecteurs, le reste en talubés.
         roster = (
             [("chef_daara", 2), ("collector", 3), ("member", 20)]
         )

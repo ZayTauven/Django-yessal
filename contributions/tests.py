@@ -38,6 +38,7 @@ class DonationCreationTests(APITestCase):
         self.campaign = Campaign.objects.create(
             name='Ndiguel Tabaski',
             description='Ndiguel for Tabaski',
+            status=Campaign.Status.ACTIVE,
             deadline=timezone.now().date(),
             fete=self.fete,
             daara=self.daara,
@@ -112,6 +113,7 @@ class DonationPaymentTests(APITestCase):
         )
         self.campaign = Campaign.objects.create(
             name='Ndiguel Tabaski',
+            status=Campaign.Status.ACTIVE,
             deadline=timezone.now().date(),
             fete=self.fete,
             daara=self.daara,
@@ -208,6 +210,7 @@ class DonationArchiveTests(APITestCase):
         )
         self.campaign = Campaign.objects.create(
             name='Ndiguel Magal',
+            status=Campaign.Status.ACTIVE,
             deadline=timezone.now().date(),
             fete=self.fete,
             daara=self.daara,

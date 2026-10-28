@@ -11,7 +11,7 @@ contre `AGENTS/tools/05_use_cases_regles.md`.
    les archivés : une opération de comptabilité vidait l'historique personnel
    de toute la confrérie.
 2. `test_collecteur_voit_aussi_les_siens` — un collecteur ne voyait QUE ses
-   encaissements, jamais ses propres dons. Il est talibé avant d'être
+   encaissements, jamais ses propres dons. Il est talubé avant d'être
    collecteur.
 3. `test_tutelle_voit_ce_qu_on_donne_pour_elle` — RG007. Le filtre `donor=user`
    ne rendait rien : un compte de tutelle ne donne pas, on donne POUR lui.
@@ -68,7 +68,7 @@ class Portees(TestCase):
         arch = DonationArchive.objects.create(name="2025", created_by=self.admin,
                                               total_amount=5000, total_count=1)
         Donation.objects.filter(pk=don.pk).update(archive_id=arch)
-        self.assertEqual(self.nb(self.talibe), 1, "le talibé a perdu son Jëf archivé")
+        self.assertEqual(self.nb(self.talibe), 1, "le talubé a perdu son Jëf archivé")
 
     def test_collecteur_voit_aussi_les_siens(self):
         Donation.objects.create(campaign=self.camp, donor=self.talibe,
@@ -127,7 +127,7 @@ class Portees(TestCase):
 
 
 class NdiguelsTerminesHorsListe(TestCase):
-    """Un talibé ou une tutelle ne voit plus, EN LISTE, les Ndiguels terminés.
+    """Un talubé ou une tutelle ne voit plus, EN LISTE, les Ndiguels terminés.
 
     Demande du client (réunion d'octobre 2026). « Terminé » se lit comme
     `Campaign.get_effective_status()` : statut `completed`, OU échéance passée.

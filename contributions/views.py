@@ -153,7 +153,7 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
             #
             # ⚠ Le filtre était `collector=user` SEUL : un collecteur voyait ce
             # qu'il avait encaissé pour autrui et JAMAIS ce qu'il avait donné
-            # lui-même. Il est talibé avant d'être collecteur ; ses propres
+            # lui-même. Il est talubé avant d'être collecteur ; ses propres
             # Jëfs sont les siens.
             #
             # Il voit aussi les DEMANDES DE COLLECTE de SES ZONES — ouvertes, ou
