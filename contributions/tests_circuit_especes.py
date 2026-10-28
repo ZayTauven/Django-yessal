@@ -276,6 +276,28 @@ class RemiseTests(CircuitEspecesBase):
         self.assertEqual(self.remettre([jef], 10000, auteur=self.chef).status_code, 403)
 
 
+class TableauDeBordCollecteurTests(CircuitEspecesBase):
+    """Les chiffres du collecteur disent ce qu'il a ENCAISSÉ, remis ou non."""
+
+    def test_indicateurs_du_collecteur(self):
+        self.encaisse(10000)                       # en caisse
+        remis = self.encaisse(5000)
+        remis.payment_status = Donation.PaymentStatus.CONFIRMED
+        remis.save()
+        # Son propre Jëf n'est pas une collecte.
+        Donation.objects.create(
+            campaign=self.campaign, donor=self.collector, amount=2000,
+            payment_method='manual', payment_status=Donation.PaymentStatus.CONFIRMED,
+        )
+        self.client.force_authenticate(self.collector)
+        data = self.client.get(reverse('analytics-list')).data
+        kpis = {k['title']: k['value'] for k in data['kpis']}
+        self.assertEqual(kpis['Total Collecté'], '15,000 FCFA')
+        self.assertEqual(kpis["Aujourd'hui"], '15,000 FCFA')
+        self.assertEqual(kpis['À remettre'], '10,000 FCFA')
+        self.assertEqual({r['status'] for r in data['recent_collects']}, {'collected', 'confirmed'})
+
+
 class AnnulationTests(CircuitEspecesBase):
     def annuler(self, jef, motif='Doublon'):
         self.client.force_authenticate(self.admin)

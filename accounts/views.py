@@ -1005,7 +1005,16 @@ class AnalyticsViewSet(viewsets.ViewSet):
             else:
                 all_donations = confirmed_qs.none()
         elif role == 'collector':
-            all_donations = confirmed_qs.filter(collector=user)
+            # Ce qu'il a ENCAISSÉ pour d'autres, remis ou non. Le confirmé seul
+            # faisait dire « Aujourd'hui 8 005 » à un collecteur qui avait
+            # ramassé 10 010 : l'argent encore dans sa main n'existait pas.
+            all_donations = Donation.objects.filter(
+                collector=user,
+                payment_status__in=[
+                    Donation.PaymentStatus.COLLECTED,
+                    Donation.PaymentStatus.CONFIRMED,
+                ],
+            ).exclude(donor=user)
         else:
             all_donations = confirmed_qs.filter(donor=user)
 
@@ -1055,13 +1064,21 @@ class AnalyticsViewSet(viewsets.ViewSet):
             kpis.append({'title': 'Contributions', 'value': str(donation_count), 'change': change_count, 'icon': 'HandCoins'})
             kpis.append({'title': 'Jëfs Actifs', 'value': str(active_campaigns_count), 'change': 'En cours', 'icon': 'Landmark'})
         elif role == 'collector':
-            today_total = all_donations.filter(created_at__date=today).aggregate(Sum('amount'))['amount__sum'] or 0
+            # Daté de l'ENCAISSEMENT : une demande faite lundi et ramassée
+            # jeudi est une collecte de jeudi.
+            from django.db.models.functions import Coalesce
+            moments = all_donations.annotate(moment=Coalesce('collected_at', 'created_at'))
+            today_total = moments.filter(moment__date=today).aggregate(Sum('amount'))['amount__sum'] or 0
             week_start = today - datetime.timedelta(days=today.weekday())
-            week_total = all_donations.filter(created_at__date__gte=week_start).aggregate(Sum('amount'))['amount__sum'] or 0
+            week_total = moments.filter(moment__date__gte=week_start).aggregate(Sum('amount'))['amount__sum'] or 0
+            a_remettre = all_donations.filter(
+                payment_status=Donation.PaymentStatus.COLLECTED, cash_deposit__isnull=True,
+            ).aggregate(Sum('amount'))['amount__sum'] or 0
             kpis.append({'title': 'Total Collecté', 'value': f'{int(total_amount):,} FCFA', 'change': change_amount, 'icon': 'Wallet'})
             kpis.append({'title': "Aujourd'hui", 'value': f'{int(today_total):,} FCFA', 'change': 'Journalier', 'icon': 'TrendingUp'})
             kpis.append({'title': 'Cette semaine', 'value': f'{int(week_total):,} FCFA', 'change': 'Hebdo', 'icon': 'HandCoins'})
-            kpis.append({'title': 'Contributions', 'value': str(donation_count), 'change': change_count, 'icon': 'Landmark'})
+            # La somme dont il répond : remplace un simple nombre de dons.
+            kpis.append({'title': 'À remettre', 'value': f'{int(a_remettre):,} FCFA', 'change': 'En caisse', 'icon': 'Landmark'})
         else:  # member
             kpis.append({'title': 'Mes Contributions', 'value': f'{int(total_amount):,} FCFA', 'change': change_amount, 'icon': 'Wallet'})
             kpis.append({'title': 'Nombre de dons', 'value': str(donation_count), 'change': change_count, 'icon': 'HandCoins'})
@@ -1149,7 +1166,12 @@ class AnalyticsViewSet(viewsets.ViewSet):
         # ── Recent collects (collector) ───────────────────────────────────
         recent_collects = []
         if role == 'collector':
-            recent_qs = all_donations.select_related('donor', 'campaign').order_by('-created_at')[:10]
+            from django.db.models.functions import Coalesce
+            recent_qs = (
+                all_donations.select_related('donor', 'campaign')
+                .annotate(moment=Coalesce('collected_at', 'created_at'))
+                .order_by('-moment')[:10]
+            )
             for don in recent_qs:
                 donor = don.donor
                 recent_collects.append({
@@ -1157,7 +1179,7 @@ class AnalyticsViewSet(viewsets.ViewSet):
                     'donor_name': f"{donor.first_name} {donor.last_name}".strip() if donor else "—",
                     'campaign_name': don.campaign.name if don.campaign else None,
                     'amount': int(don.amount),
-                    'created_at': don.created_at.isoformat(),
+                    'created_at': don.moment.isoformat(),
                     'status': don.payment_status,
                 })
 

@@ -440,6 +440,14 @@ class Command(BaseCommand):
             else:
                 status = Donation.PaymentStatus.FAILED
 
+            # Un statut qui n'existe pas pour ce moyen fabriquait des Jëfs hors
+            # circuit : des espèces « en attente » avec un collecteur (ni
+            # demande, ni caisse), des « virements en attente » réglés en Wave.
+            if method == Donation.PaymentMethod.MANUAL and status == Donation.PaymentStatus.PENDING:
+                status = Donation.PaymentStatus.COLLECTED
+            elif status == Donation.PaymentStatus.PENDING_WIRE and method != Donation.PaymentMethod.VIREMENT:
+                status = Donation.PaymentStatus.PENDING
+
             donation = Donation.objects.create(
                 campaign=campaign,
                 donor=donor,
@@ -462,8 +470,10 @@ class Command(BaseCommand):
 
             # `created_at` est en auto_now_add : il faut le réécrire après coup
             # pour étaler les dons dans le temps.
+            moment = now - timedelta(days=RNG.randint(0, 180), hours=RNG.randint(0, 23))
             Donation.objects.filter(pk=donation.pk).update(
-                created_at=now - timedelta(days=RNG.randint(0, 180), hours=RNG.randint(0, 23))
+                created_at=moment,
+                collected_at=moment if status == Donation.PaymentStatus.COLLECTED else None,
             )
             created += 1
 
