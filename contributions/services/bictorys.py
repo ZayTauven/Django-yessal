@@ -45,6 +45,11 @@ def initiate_bictorys_payment(donation, payment_method: str) -> dict:
     payment_reference = f"don_{donation.id}_{uuid.uuid4().hex[:6]}"
     payment_type = PAYMENT_TYPE_MAP.get(payment_method)
 
+    # Celui qui PAIE, pas forcément celui qui donne. Quand un collecteur règle
+    # par Wave au nom d'un membre, la demande de validation partait sur le
+    # téléphone du membre, qui n'était pas là pour l'accepter.
+    payeur = donation.collector or donation.donor
+
     payload = {
         "merchantReference": str(uuid.uuid4()),
         "amount": int(donation.amount),
@@ -54,9 +59,9 @@ def initiate_bictorys_payment(donation, payment_method: str) -> dict:
         "successRedirectUrl": f"{public_base}/contributions/success/{donation.id}/",
         "errorRedirectUrl": f"{public_base}/contributions/error/{donation.id}/",
         "customer": {
-            "name": f"{donation.donor.first_name} {donation.donor.last_name}",
-            "phone": donation.donor.phone or "",
-            "email": donation.donor.email,
+            "name": f"{payeur.first_name} {payeur.last_name}",
+            "phone": payeur.phone or "",
+            "email": payeur.email,
             "city": "Dakar",
             "country": "SN",
             "locale": "fr-FR",

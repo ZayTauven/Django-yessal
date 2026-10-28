@@ -8,7 +8,14 @@ User = get_user_model()
 
 @receiver(post_save, sender=Donation)
 def notify_for_collector_payment(sender, instance, created, **kwargs):
-    if created and instance.payment_method in {'collector', 'manual'}:
+    # Une DEMANDE de collecte seulement. Le signal partait aussi pour des
+    # espèces déjà dans la main du collecteur, et annonçait « Collecte
+    # physique à effectuer » aux autres pour un argent déjà ramassé.
+    if (
+        created
+        and instance.payment_method == Donation.PaymentMethod.MANUAL
+        and instance.payment_status == Donation.PaymentStatus.PENDING
+    ):
         donor = instance.donor
         campaign = instance.campaign
         daara = donor.daara
