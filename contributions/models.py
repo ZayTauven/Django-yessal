@@ -95,8 +95,11 @@ class Donation(models.Model):
         PaymentMethod.MANUAL,
     )
 
-    campaign = models.ForeignKey('events.Campaign', on_delete=models.CASCADE, related_name='donations')
-    donor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='donations_made')
+    # PROTECT, et non CASCADE : supprimer un Ndiguel ou un membre effaçait EN
+    # SILENCE tous ses Jëfs — confirmés, remis, comptés dans un bordereau. Un
+    # Ndiguel se clôture, un compte se bloque ; l'argent reste au registre.
+    campaign = models.ForeignKey('events.Campaign', on_delete=models.PROTECT, related_name='donations')
+    donor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='donations_made')
     beneficiary = models.ForeignKey('accounts.Tutelle', on_delete=models.SET_NULL, null=True, blank=True, related_name='donations_received')
     target_daara = models.ForeignKey(
         'accounts.Daara',
@@ -117,6 +120,10 @@ class Donation(models.Model):
     validated_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='validated_donations')
     validated_at = models.DateTimeField(null=True, blank=True)
 
+    # « Je m'en charge » : un collecteur annonce qu'il est en route. La demande
+    # reste `pending`, mais porte déjà son `collector` — les autres collecteurs
+    # de la zone la voient prise et ne se déplacent pas pour rien.
+    claimed_at = models.DateTimeField(null=True, blank=True)
     collected_at = models.DateTimeField(null=True, blank=True)
     cash_deposit = models.ForeignKey(
         'CashDeposit', on_delete=models.PROTECT, null=True, blank=True, related_name='donations',

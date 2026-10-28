@@ -107,9 +107,21 @@ def _champ_telephone(**kwargs):
 
 
 class PilotageSettingsSerializer(serializers.ModelSerializer):
+    # L'interrupteur de la collecte est LISIBLE ici, jamais modifiable : il ne
+    # se bascule que par code de vérification (`PilotageSettingsViewSet.collecte`).
+    collecte_modifiee_par_nom = serializers.SerializerMethodField()
+
+    def get_collecte_modifiee_par_nom(self, obj):
+        u = obj.collecte_modifiee_par
+        return (u.get_full_name() or u.email) if u else None
+
     class Meta:
         model = PilotageSettings
-        fields = ['enable_salons']
+        fields = [
+            'enable_salons', 'collecte_physique_active',
+            'collecte_modifiee_le', 'collecte_modifiee_par_nom',
+        ]
+        read_only_fields = ['collecte_physique_active', 'collecte_modifiee_le']
 
 
 class LDDSerializer(serializers.ModelSerializer):

@@ -16,6 +16,7 @@ from core.mail import send_to_user
 
 from .models import CashDeposit, Donation, DonationArchive
 from .serializers import CashDepositSerializer, DonationSerializer
+from .services.collecte import collecte_active, disponibilite
 
 User = get_user_model()
 
@@ -148,19 +149,19 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
             # lui-même. Il est talibé avant d'être collecteur ; ses propres
             # Jëfs sont les siens.
             #
-            # Il voit aussi les DEMANDES DE COLLECTE ouvertes. Il en était
-            # notifié, mais ne pouvait pas les lire : une demande n'a pas encore
-            # de collecteur, le filtre ne la rendait donc à personne.
-            # (Restreint aux zones du collecteur au lot « Gestion collecteurs ».)
+            # Il voit aussi les DEMANDES DE COLLECTE de SES ZONES — ouvertes, ou
+            # déjà prises par un collègue (« Je m'en charge ») : il doit savoir
+            # que quelqu'un est en route. Un membre au Sénégal n'a que faire d'un
+            # collecteur en France ; avant les zones, tous voyaient tout.
             queryset = base.filter(
                 Q(collector=user)
                 | Q(donor=user)
                 | Q(
                     payment_method=Donation.PaymentMethod.MANUAL,
                     payment_status=Donation.PaymentStatus.PENDING,
-                    collector__isnull=True,
+                    donor__daara__ldd__in=user.collecte_zones.all(),
                 )
-            )
+            ).distinct()
         elif user.role == 'chef_daara':
             if user.daara_id:
                 # Registre du Daara : les livres clos en sortent, mais jamais
@@ -200,13 +201,12 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
                 return Donation.objects.none()
 
         # Les deux files du collecteur, toujours DANS la portée du rôle :
-        #   ?a_collecter=1 → demandes de collecte ouvertes
+        #   ?a_collecter=1 → demandes de collecte, ouvertes ou prises
         #   ?ma_caisse=1   → ce que j'ai encaissé et pas encore remis
         if self.request.query_params.get('a_collecter'):
             queryset = queryset.filter(
                 payment_method=Donation.PaymentMethod.MANUAL,
                 payment_status=Donation.PaymentStatus.PENDING,
-                collector__isnull=True,
             ).exclude(donor=user)
         if self.request.query_params.get('ma_caisse'):
             queryset = queryset.filter(
@@ -237,6 +237,13 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
                 "Seul un collecteur peut enregistrer un Jëf au nom d'un autre membre."
             )
 
+        # La tutelle bénéficiaire doit être portée par le DONATEUR. Rien ne le
+        # vérifiait : un Jëf pouvait être attribué à la tutelle d'un autre
+        # membre, et apparaître dans l'historique de quelqu'un qui n'a rien vu.
+        beneficiaire = serializer.validated_data.get('beneficiary')
+        if beneficiaire and beneficiaire.tutor_id != donor.pk:
+            raise ValidationError({'beneficiary': ["Cette tutelle n'est pas portée par le donateur."]})
+
         extra_kwargs = {
             'donor': donor,
             'payment_status': Donation.PaymentStatus.PENDING,
@@ -257,6 +264,20 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
         if especes_en_main:
             extra_kwargs['payment_status'] = Donation.PaymentStatus.COLLECTED
             extra_kwargs['collected_at'] = timezone.now()
+
+        # Les espèces suivent l'interrupteur et les zones. L'interface masque
+        # déjà l'option ; le serveur ne fait pas confiance à l'interface.
+        if serializer.validated_data.get('payment_method') == Donation.PaymentMethod.MANUAL:
+            if not collecte_active():
+                raise ValidationError({'payment_method': [
+                    "La collecte en espèces est suspendue. Choisissez un paiement mobile, "
+                    "la carte ou le virement."
+                ]})
+            if not pour_autrui and not disponibilite(donor)['disponible']:
+                raise ValidationError({'payment_method': [
+                    "Aucun collecteur ne couvre votre zone. Choisissez un autre moyen, "
+                    "ou contactez le coordinateur de votre Daara."
+                ]})
 
         donation = serializer.save(**extra_kwargs)
 
@@ -427,6 +448,9 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='admin/confirm-wire', permission_classes=[permissions.IsAdminUser])
     def confirm_wire(self, request, pk=None):
         donation = self.get_object()
+        # Même règle que pour les espèces : on ne confirme pas son propre argent.
+        if donation.donor_id == request.user.pk:
+            raise PermissionDenied("Un autre administrateur doit confirmer votre virement.")
         if donation.payment_status != Donation.PaymentStatus.PENDING_WIRE:
             return Response({'detail': 'Ce don n’est pas en attente de virement.'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -456,6 +480,11 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
         """Le collecteur déclare avoir reçu l'argent d'une demande de collecte."""
         if request.user.role not in COLLECT_ROLES:
             raise PermissionDenied("Seul un collecteur peut encaisser un Jëf.")
+        if not collecte_active():
+            return Response(
+                {'detail': "La collecte en espèces est suspendue : aucun nouvel encaissement."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         visible = self.get_object()
         with transaction.atomic():
@@ -480,6 +509,78 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
 
         _accuser_encaissement(donation)
         return Response(DonationSerializer(donation).data)
+
+    @action(detail=True, methods=['post'])
+    def claim(self, request, pk=None):
+        """« Je m'en charge » : le collecteur annonce qu'il est en route.
+
+        La demande reste `pending` ; elle porte déjà son collecteur, ce qui la
+        montre prise aux autres collecteurs de la zone et ferme `collect` à
+        tout autre que lui. Le membre sait qui va l'appeler.
+        """
+        if request.user.role not in COLLECT_ROLES:
+            raise PermissionDenied("Seul un collecteur peut prendre en charge une demande.")
+        if not collecte_active():
+            return Response(
+                {'detail': "La collecte en espèces est suspendue."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        visible = self.get_object()
+        with transaction.atomic():
+            donation = Donation.objects.select_for_update().get(pk=visible.pk)
+            if (
+                donation.payment_method != Donation.PaymentMethod.MANUAL
+                or donation.payment_status != Donation.PaymentStatus.PENDING
+            ):
+                return Response({'detail': "Ce Jëf n'attend pas de collecte."}, status=status.HTTP_400_BAD_REQUEST)
+            if donation.donor_id == request.user.pk:
+                return Response({'detail': "Vous ne pouvez pas collecter votre propre Jëf."}, status=status.HTTP_400_BAD_REQUEST)
+            if donation.collector_id and donation.collector_id != request.user.pk:
+                return Response(
+                    {'detail': f"{nom_de(donation.collector)} s'en charge déjà."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            donation.collector = request.user
+            donation.claimed_at = timezone.now()
+            donation.save(update_fields=['collector', 'claimed_at', 'updated_at'])
+
+        notify(
+            donation.donor,
+            code='jef_pris_en_charge',
+            titre='Un collecteur arrive',
+            message=(
+                f"{nom_de(request.user)} s'occupe de votre Jëf de "
+                f"{montant_lisible(donation.amount)} FCFA et va vous contacter."
+            ),
+            courriel=False,
+        )
+        return Response(DonationSerializer(donation).data)
+
+    @action(detail=True, methods=['post'])
+    def release(self, request, pk=None):
+        """« Je ne peux plus » : la demande redevient ouverte pour la zone."""
+        visible = self.get_object()
+        with transaction.atomic():
+            donation = Donation.objects.select_for_update().get(pk=visible.pk)
+            if donation.payment_status != Donation.PaymentStatus.PENDING or not donation.collector_id:
+                return Response({'detail': "Cette demande n'est pas prise en charge."}, status=status.HTTP_400_BAD_REQUEST)
+            if donation.collector_id != request.user.pk and request.user.role != 'admin':
+                raise PermissionDenied("Seul le collecteur qui s'en charge peut la relâcher.")
+            donation.collector = None
+            donation.claimed_at = None
+            donation.save(update_fields=['collector', 'claimed_at', 'updated_at'])
+        return Response(DonationSerializer(donation).data)
+
+    @action(detail=False, methods=['get'])
+    def collecte(self, request):
+        """Ce que l'appelant peut faire en espèces : l'interface en dépend.
+
+        `disponible` : il peut DEMANDER une collecte (un collecteur couvre sa
+        zone). `active` : l'administration n'a pas suspendu la collecte — c'est
+        ce qui ouvre l'encaissement pour autrui.
+        """
+        return Response(disponibilite(request.user))
 
     @action(detail=False, methods=['get'], url_path='admin/pending-cash', permission_classes=[permissions.IsAdminUser])
     def pending_cash(self, request):
@@ -602,7 +703,13 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
                 f"{reference} validée par {nom_de(request.user)} : {len(jefs)} Jëf(s), "
                 f"{montant_lisible(total)} FCFA."
             ),
-            courriel=False,
+            # Sa décharge écrite : la preuve qu'il ne détient plus cet argent.
+            contexte={
+                'reference': reference,
+                'nombre': len(jefs),
+                'montant': montant_lisible(total),
+                'validateur': nom_de(request.user),
+            },
         )
         return Response(CashDepositSerializer(remise).data, status=status.HTTP_201_CREATED)
 
@@ -647,7 +754,14 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
             f"Votre Jëf de {montant_lisible(donation.amount)} FCFA a été annulé "
             f"par l'administration. Motif : {motif}"
         )
-        notify(donation.donor, code='jef_annule', titre='Jëf annulé', message=message, courriel=False)
+        notify(
+            donation.donor, code='jef_annule', titre='Jëf annulé', message=message,
+            contexte={
+                'montant': montant_lisible(donation.amount),
+                'campagne': donation.campaign.name if donation.campaign else '',
+                'motif': motif,
+            },
+        )
         if donation.collector_id and donation.collector_id != donation.donor_id:
             notify(
                 donation.collector,

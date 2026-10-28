@@ -60,12 +60,19 @@ def notify(user, *, code, titre, message, contexte=None, courriel=True):
         send_to_user(user, code, contexte or {})
 
 
-def notify_many(users, *, code, titre, message, contexte=None, contexte_pour=None):
+def notify_many(users, *, code, titre, message, contexte=None, contexte_pour=None,
+                courriel=True, push=False):
     """Même chose pour un ensemble de destinataires.
 
     Les notifications partent en un seul `bulk_create` — six cents INSERT
     unitaires sur un changement de date de fête tiendraient la requête. Les
     courriels partent dans un fil séparé, sur une seule connexion SMTP.
+
+    ⚠ `bulk_create` ne déclenche PAS `post_save` : le push FCM, branché sur
+    ce signal (`comms/signals.py`), ne partait donc jamais pour une
+    notification de masse. `push=True` l'envoie explicitement, dans un fil à
+    part — à réserver aux messages qui doivent atteindre les téléphones
+    (suspension de la collecte), pas aux annonces courantes.
     """
     from .models import Notification
 
@@ -81,7 +88,21 @@ def notify_many(users, *, code, titre, message, contexte=None, contexte_pour=Non
     except Exception:
         logger.exception("Notifications de masse non enregistrées (%s)", code)
 
-    send_to_users(destinataires, code, contexte_pour=contexte_pour, contexte=contexte)
+    if push:
+        import threading
+
+        from .services import send_fcm_push
+
+        ids = [u.pk for u in destinataires]
+
+        def _pousser():
+            for uid in ids:
+                send_fcm_push(uid, titre, message, data={'url': '/dashboard/notifications'})
+
+        threading.Thread(target=_pousser, daemon=True).start()
+
+    if courriel:
+        send_to_users(destinataires, code, contexte_pour=contexte_pour, contexte=contexte)
 
 
 def administrateurs():

@@ -23,6 +23,7 @@ from .views import (
     PendingDocumentValidationViewSet,
     DocumentValidationView,
     MemberAssignTitleView,
+    CollecteurViewSet,
 )
 
 router = DefaultRouter()
@@ -34,6 +35,7 @@ router.register(r'audit', AuditLogViewSet, basename='audit')
 router.register(r'users', UserManagementViewSet, basename='users')
 router.register(r'directory/users', DirectoryUserViewSet, basename='directory-users')
 router.register(r'settings/pilotage', PilotageSettingsViewSet, basename='pilotage-settings')
+router.register(r'collecteurs', CollecteurViewSet, basename='collecteurs')
 router.register(r'titles', MemberTitleViewSet, basename='titles')
 router.register(r'title-requests', TitleRequestViewSet, basename='title-requests')
 router.register(r'admin/documents/pending', PendingDocumentValidationViewSet, basename='admin-documents-pending')

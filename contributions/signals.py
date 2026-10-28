@@ -20,23 +20,20 @@ def notify_for_collector_payment(sender, instance, created, **kwargs):
         campaign = instance.campaign
         daara = donor.daara
         
-        recipients = set()
-        
-        # 1. Admins
-        admins = User.objects.filter(role='admin')
-        for admin in admins:
-            recipients.add(admin)
-            
+        from .services.collecte import collecteurs_de_zone, zone_de
+
+        # Les collecteurs de la ZONE du membre, plus le coordinateur de son
+        # Daara. Partait vers TOUS les administrateurs et vers les seuls
+        # collecteurs du même Daara — un collecteur couvrant toute la zone
+        # n'apprenait rien, et chaque demande réveillait tous les admins.
+        # Ceux-ci ne sont plus prévenus qu'en dernier recours : quand personne
+        # ne couvre la zone, la demande serait sinon orpheline.
+        de_zone = set(collecteurs_de_zone(zone_de(donor)))
+        recipients = set(de_zone)
         if daara:
-            # 2. Daara Chief
-            chiefs = User.objects.filter(role='chef_daara', daara=daara)
-            for chief in chiefs:
-                recipients.add(chief)
-                
-            # 3. Collectors of the Daara
-            collectors = User.objects.filter(role='collector', daara=daara)
-            for collector in collectors:
-                recipients.add(collector)
+            recipients.update(User.objects.filter(role='chef_daara', daara=daara))
+        if not de_zone:
+            recipients.update(User.objects.filter(role='admin', is_active=True))
         
         from .views import montant_lisible
 

@@ -42,6 +42,11 @@ class DonationSerializer(serializers.ModelSerializer):
     def validate_amount(self, value):
         # Rien ne l'empêchait : un Jëf de -5 000 FCFA s'enregistrait et
         # retranchait son montant du total d'un Ndiguel une fois confirmé.
+        # Le franc CFA n'a pas de centimes. `initiate_bictorys_payment` envoie
+        # `int(amount)` et le webhook compare à `int(amount)` : un Jëf de
+        # 100,50 était payé 100 et enregistré 100,50.
+        if value != value.to_integral_value():
+            raise serializers.ValidationError("Le montant s'exprime en francs entiers.")
         if value < Donation.MIN_AMOUNT:
             raise serializers.ValidationError(
                 f"Le montant minimum d'un Jëf est de {Donation.MIN_AMOUNT} FCFA."
@@ -70,7 +75,7 @@ class DonationSerializer(serializers.ModelSerializer):
         # ═══════════════════════════════════════════════════════════════════
         read_only_fields = [
             'payment_status', 'collector', 'target_daara',
-            'validated_by', 'validated_at', 'collected_at', 'cash_deposit',
+            'validated_by', 'validated_at', 'claimed_at', 'collected_at', 'cash_deposit',
             'cancelled_by', 'cancelled_at', 'cancellation_reason',
             'archive_id', 'external_ref', 'bictorys_ref', 'checkout_url', 'wire_reference',
             'created_at', 'updated_at',

@@ -240,6 +240,25 @@ appelé depuis `resetMemberPasswordAction`
 
 ---
 
+## A7 · `code_verification` ● existe
+
+**Déclencheur** `accounts.services.code_verification.emettre` — aujourd'hui, la
+suspension ou la reprise de la collecte en espèces (Pilotage › Collecteurs)
+**Destinataire** l'administrateur qui demande l'opération
+**Objet** `Votre code de vérification Yessal Gui`
+
+> Vous avez demandé à **{objet}**. Pour confirmer qu'il s'agit bien de vous,
+> saisissez ce code : **{code}**. Il est valable {duree_validite} et ne sert
+> qu'une fois.
+
+**Variables** `prenom`, `code`, `objet`, `duree_validite`
+
+> Le code n'est stocké qu'en empreinte. En `DEBUG`, il est aussi écrit au
+> journal du conteneur : les comptes de démonstration n'ont pas de vraie
+> boîte.
+
+---
+
 # B. Documents d'identité
 
 ## B1 · `document_recu` ● existe
@@ -528,6 +547,38 @@ appelé depuis `resetMemberPasswordAction`
 
 ---
 
+## D7 · `jef_annule` ● existe
+
+**Déclencheur** `DonationViewSet.cancel` (administration) — [`contributions/views.py`](../contributions/views.py)
+**Destinataire** le donateur (le collecteur, lui, reçoit la notification sans courriel)
+**Objet** `Votre Jëf a été annulé`
+
+> Votre Jëf de **{montant} FCFA** pour le Ndiguel *{campagne}* a été annulé
+> par l'administration. **Motif :** {motif}
+>
+> Si vous aviez remis cette somme en espèces à un collecteur, elle doit vous
+> être rendue.
+
+**Variables** `prenom`, `montant`, `campagne`, `motif`, `base_url`
+
+---
+
+## D8 · `remise_validee` ● existe
+
+**Déclencheur** `DonationViewSet.confirm_cash` — [`contributions/views.py`](../contributions/views.py)
+**Destinataire** le collecteur qui a apporté les espèces
+**Objet** `Votre remise d'espèces a été validée`
+
+> Votre **{reference}** a été comptée et validée par **{validateur}** :
+> {nombre} Jëf(s), {montant} FCFA. Cette somme sort de votre caisse.
+
+**Variables** `prenom`, `reference`, `nombre`, `montant`, `validateur`, `base_url`
+
+> C'est la décharge du collecteur : la preuve écrite qu'il ne détient plus
+> cet argent.
+
+---
+
 # E. Ndiguels et événements
 
 ## E1 · `ndiguel_responsable` ● existe
@@ -651,6 +702,25 @@ courriel, variable `{fete}`, route `/api/events/fetes/`).*
 > annonces `info` sont nombreuses et déjà visibles dans le Hub ; les envoyer
 > toutes est le plus court chemin vers le dossier « indésirables », et vers un
 > désabonnement de masse qui emporterait aussi les messages qui comptent.
+
+---
+
+## F4 · `collecte_suspendue` ● existe
+
+**Déclencheur** suspension de la collecte en espèces (Pilotage › Collecteurs),
+après code de vérification et double confirmation
+**Destinataire** TOUS les membres actifs
+**Objet** `Important : la collecte en espèces est suspendue`
+
+> **Ne confiez votre argent à personne qui se présenterait comme collecteur.**
+> Vos Jëfs restent possibles depuis l'application, par Wave, Orange Money,
+> carte bancaire ou virement.
+
+**Variables** `prenom`, `base_url`
+
+> ⚠️ C'est le seul envoi de masse du produit avec `fete_date_modifiee`. Il
+> bute sur la limite Gmail (~500 destinataires par jour, voir plus bas) : la
+> notification en base et le push, eux, atteignent tout le monde.
 
 ---
 

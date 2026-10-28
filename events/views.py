@@ -181,6 +181,33 @@ class CampaignViewSet(viewsets.ModelViewSet):
     # Rôles à qui la LISTE ne montre que les Ndiguels encore ouverts.
     ROLES_SANS_NDIGUELS_TERMINES = (User.Role.MEMBER, User.Role.TUTELLE)
 
+    def destroy(self, request, *args, **kwargs):
+        """Supprimer un Ndiguel : l'administration seule, et jamais s'il porte des Jëfs.
+
+        🔴 `can_be_managed_by` ouvre la gestion à TOUT coordinateur de Daara et
+        à l'organisateur désigné — une nuance voulue pour suivre les tâches.
+        Elle valait aussi pour DELETE, et `Donation.campaign` était en
+        CASCADE : un clic de n'importe quel coordinateur effaçait le Ndiguel ET
+        tous ses Jëfs, confirmés et remis compris. La clé est désormais en
+        PROTECT ; on répond ici avant que la base ne lève.
+        """
+        campaign = self.get_object()
+        if request.user.role != User.Role.ADMIN:
+            return Response(
+                {'detail': "Seule l'administration peut supprimer un Ndiguel."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        nb = campaign.donations.count()
+        if nb:
+            return Response(
+                {'detail': (
+                    f"Ce Ndiguel porte {nb} Jëf{'s' if nb > 1 else ''} : il ne peut pas être "
+                    "supprimé sans effacer l'historique des contributions. Clôturez-le."
+                )},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return super().destroy(request, *args, **kwargs)
+
     def get_queryset(self):
         """Un talibé ou une tutelle ne voit plus, en liste, les Ndiguels terminés.
 

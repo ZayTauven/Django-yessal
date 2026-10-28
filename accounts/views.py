@@ -1,4 +1,4 @@
-﻿from django.db.models import Sum, Count, Prefetch
+﻿from django.db.models import Sum, Count, Prefetch, Q
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -1298,6 +1298,30 @@ class UserManagementViewSet(viewsets.ModelViewSet):
     filter_backends = [filters.SearchFilter]
     search_fields = ['first_name', 'last_name', 'email', 'phone', 'daara__name']
 
+    def destroy(self, request, *args, **kwargs):
+        """Refuse de supprimer un compte qui a un historique d'argent.
+
+        `Donation.donor` était en CASCADE : supprimer un membre effaçait ses
+        Jëfs, et le total des Ndiguels baissait sans que personne ne l'ait
+        décidé. Un collecteur, lui, faisait tomber une 500 (ses bordereaux
+        sont en PROTECT). On le dit ici, avec l'alternative : bloquer.
+        """
+        cible = self.get_object()
+        if (
+            cible.donations_made.exists()
+            or cible.collected_donations.exists()
+            or cible.cash_deposits.exists()
+            or cible.validated_cash_deposits.exists()
+        ):
+            return Response(
+                {'detail': (
+                    "Ce compte a un historique de Jëfs : le supprimer effacerait des "
+                    "contributions. Bloquez-le plutôt — il ne pourra plus se connecter."
+                )},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return super().destroy(request, *args, **kwargs)
+
     @action(detail=True, methods=['post'])
     def validate(self, request, pk=None):
         user = self.get_object()
@@ -1475,4 +1499,179 @@ class PilotageSettingsViewSet(viewsets.ViewSet):
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    # ── Interrupteur de la collecte en espèces ─────────────────────────────
+    #
+    # Deux temps, voulus : on demande un code (`collecte/code`), puis on
+    # bascule avec ce code ET une confirmation explicite (`collecte`). Une
+    # session laissée ouverte ne suffit pas à couper la collecte de tout le
+    # Kourel, et un clic distrait non plus.
+
+    @staticmethod
+    def _objet_code(active: bool) -> str:
+        return 'collecte_reprendre' if active else 'collecte_suspendre'
+
+    @action(detail=False, methods=['post'], url_path='collecte/code')
+    def collecte_code(self, request):
+        from .services.code_verification import CodeRefuse, emettre
+
+        if request.user.role != User.Role.ADMIN:
+            return Response({'detail': "Réservé aux administrateurs."}, status=status.HTTP_403_FORBIDDEN)
+        active = bool(request.data.get('active'))
+        if PilotageSettings.load().collecte_physique_active == active:
+            return Response(
+                {'detail': "La collecte est déjà dans cet état."}, status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            emettre(request.user, self._objet_code(active))
+        except CodeRefuse as e:
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'detail': f"Un code a été envoyé à {request.user.email}. Il est valable 10 minutes."})
+
+    @action(detail=False, methods=['post'], url_path='collecte')
+    def collecte(self, request):
+        from django.db import transaction
+
+        from contributions.models import Donation
+        from comms.notify import notify_many
+        from .services.code_verification import CodeRefuse, verifier
+
+        if request.user.role != User.Role.ADMIN:
+            return Response({'detail': "Réservé aux administrateurs."}, status=status.HTTP_403_FORBIDDEN)
+        active = bool(request.data.get('active'))
+        if request.data.get('confirme') is not True:
+            return Response(
+                {'detail': "Confirmez explicitement l'opération."}, status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        reglages = PilotageSettings.load()
+        if reglages.collecte_physique_active == active:
+            return Response({'detail': "La collecte est déjà dans cet état."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            verifier(request.user, self._objet_code(active), request.data.get('code'))
+        except CodeRefuse as e:
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        maintenant = timezone.now()
+        annulees = 0
+        with transaction.atomic():
+            reglages.collecte_physique_active = active
+            reglages.collecte_modifiee_par = request.user
+            reglages.collecte_modifiee_le = maintenant
+            reglages.save(update_fields=[
+                'collecte_physique_active', 'collecte_modifiee_par', 'collecte_modifiee_le',
+            ])
+            if not active:
+                # Les DEMANDES ouvertes ou prises tombent : plus personne n'est
+                # habilité à passer. L'argent déjà ENCAISSÉ, lui, reste dans le
+                # circuit jusqu'à sa remise — il n'est pas touché.
+                annulees = Donation.objects.filter(
+                    payment_method=Donation.PaymentMethod.MANUAL,
+                    payment_status=Donation.PaymentStatus.PENDING,
+                ).update(
+                    payment_status=Donation.PaymentStatus.CANCELLED,
+                    cancelled_by=request.user,
+                    cancelled_at=maintenant,
+                    cancellation_reason="Collecte en espèces suspendue par l'administration.",
+                    updated_at=maintenant,
+                )
+            AuditLog.objects.create(
+                user=request.user,
+                action='collecte_reprise' if active else 'collecte_suspendue',
+                entity='pilotage',
+                description=(
+                    "Reprise de la collecte en espèces" if active else
+                    f"Suspension de la collecte en espèces ({annulees} demande(s) annulée(s))"
+                ),
+                metadata={'demandes_annulees': annulees},
+            )
+
+        membres = User.objects.filter(status=User.Status.ACTIVE)
+        if active:
+            notify_many(
+                membres, code='collecte_reprise',
+                titre='La collecte en espèces reprend',
+                message="Vous pouvez de nouveau remettre vos Jëfs en espèces aux collecteurs de votre zone.",
+                courriel=False, push=True,
+            )
+        else:
+            notify_many(
+                membres, code='collecte_suspendue',
+                titre='Collecte en espèces suspendue',
+                message=(
+                    "Ne confiez votre argent à personne qui se présenterait comme collecteur. "
+                    "Faites vos Jëfs depuis l'application : Wave, Orange Money, carte ou virement."
+                ),
+                push=True,
+            )
+        return Response({
+            **PilotageSettingsSerializer(reglages).data,
+            'demandes_annulees': annulees,
+        })
+
+
+class CollecteurViewSet(viewsets.ViewSet):
+    """Pilotage › Collecteurs : qui collecte, dans quelles zones, avec quelle caisse."""
+
+    permission_classes = [permissions.IsAdminUser]
+
+    def list(self, request):
+        from contributions.models import Donation
+
+        collecteurs = (
+            User.objects.filter(role=User.Role.COLLECTOR)
+            .select_related('daara__ldd')
+            .prefetch_related('collecte_zones')
+            .order_by('last_name', 'first_name')
+        )
+        caisses = dict(
+            Donation.objects.filter(
+                payment_status=Donation.PaymentStatus.COLLECTED, cash_deposit__isnull=True,
+            ).values_list('collector').annotate(total=Sum('amount')).values_list('collector', 'total')
+        )
+        return Response([{
+            'id': c.id,
+            'nom': c.get_full_name() or c.email or c.phone,
+            'telephone': c.phone,
+            'statut': c.status,
+            'daara': c.daara.name if c.daara else None,
+            'ldd': c.daara.ldd.name if c.daara and c.daara.ldd else None,
+            'zones': [{'id': z.id, 'code': z.code, 'nom': z.name} for z in c.collecte_zones.all()],
+            'caisse': str(caisses.get(c.id) or 0),
+        } for c in collecteurs])
+
+    @action(detail=True, methods=['post'])
+    def zones(self, request, pk=None):
+        collecteur = User.objects.filter(pk=pk, role=User.Role.COLLECTOR).first()
+        if not collecteur:
+            return Response({'detail': "Collecteur introuvable."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            ids = {int(i) for i in request.data.get('zones') or []}
+        except (TypeError, ValueError):
+            return Response({'detail': "Liste de zones invalide."}, status=status.HTTP_400_BAD_REQUEST)
+        zones = list(LDD.objects.filter(pk__in=ids))
+        if len(zones) != len(ids):
+            return Response({'detail': "Une des zones est introuvable."}, status=status.HTTP_400_BAD_REQUEST)
+        collecteur.collecte_zones.set(zones)
+        return Response({'id': collecteur.id, 'zones': [
+            {'id': z.id, 'code': z.code, 'nom': z.name} for z in zones
+        ]})
+
+    @action(detail=False, methods=['get'])
+    def couverture(self, request):
+        """Chaque zone et ses collecteurs actifs : une zone à 0 n'a pas d'option « Collecteur »."""
+        zones = (
+            LDD.objects.filter(is_active=True)
+            .annotate(collecteurs_actifs=Count(
+                'collecteurs', filter=Q(
+                    collecteurs__role=User.Role.COLLECTOR,
+                    collecteurs__status=User.Status.ACTIVE,
+                ), distinct=True,
+            ))
+            .order_by('code', 'name')
+        )
+        return Response([
+            {'id': z.id, 'code': z.code, 'nom': z.name, 'collecteurs': z.collecteurs_actifs}
+            for z in zones
+        ])
 

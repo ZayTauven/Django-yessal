@@ -95,6 +95,7 @@ SUJETS = {
     'mot_de_passe_oublie':    "Réinitialisez votre mot de passe Yessal Gui",
     'mot_de_passe_provisoire': "Un mot de passe provisoire vous a été attribué",
     'mot_de_passe_modifie':   "Votre mot de passe Yessal Gui a été modifié",
+    'code_verification':      "Votre code de vérification Yessal Gui",
 
     # ── Documents ──────────────────────────────────────────────────────────
     'document_recu':          "Votre document a bien été reçu",
@@ -115,6 +116,8 @@ SUJETS = {
     'virement_confirme':      "Votre virement a été confirmé",
     'paiement_confirme':      "Votre paiement a été confirmé",
     'paiement_echoue':        "Votre paiement n'a pas abouti",
+    'jef_annule':             "Votre Jëf a été annulé",
+    'remise_validee':         "Votre remise d'espèces a été validée",
 
     # ── Ndiguels et événements (modèle `Fete`) ──────────────────────────────
     'ndiguel_responsable':    "Vous êtes responsable du Ndiguel {campagne}",
@@ -123,6 +126,7 @@ SUJETS = {
 
     # ── Communauté ─────────────────────────────────────────────────────────
     'promotion_collecteur':   "Vous êtes désormais collecteur",
+    'collecte_suspendue':     "Important : la collecte en espèces est suspendue",
     'invitation_salon':       "Vous êtes invité(e) dans un salon de discussion",
     'annonce':                "{titre}",
 }

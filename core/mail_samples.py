@@ -53,6 +53,13 @@ CONTEXTES = {
                                 'mode_paiement': 'Orange Money',
                                 'reference': 'don_4821_a3f9c2'},
     'paiement_echoue':         {**_BASE, 'montant': '25 000', 'campagne': 'Ndiguel Magal 2027'},
+    'jef_annule':              {**_BASE, 'montant': '25 000', 'campagne': 'Ndiguel Magal 2027',
+                                'motif': 'Jëf saisi en double.'},
+    'remise_validee':          {**_BASE, 'reference': 'Remise n°12', 'nombre': 7,
+                                'montant': '85 000', 'validateur': 'Souleymane Sy'},
+    'code_verification':       {**_BASE, 'code': '482913', 'duree_validite': '10 minutes',
+                                'objet': 'suspendre la collecte en espèces'},
+    'collecte_suspendue':      _BASE,
 
     'ndiguel_responsable':     {**_BASE, 'campagne': 'Ndiguel Magal 2027',
                                 'objectif': '5 000 000', 'echeance': '31 décembre 2026'},

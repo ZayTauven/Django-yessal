@@ -178,6 +178,15 @@ class User(AbstractUser):
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.MEMBER)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     daara = models.ForeignKey(Daara, on_delete=models.SET_NULL, null=True, blank=True, related_name='members')
+    # Les zones où un collecteur voit les DEMANDES de collecte. Un membre au
+    # Sénégal n'a que faire d'un collecteur en France, et inversement. Elles
+    # ne bornent PAS le mode collecteur : enregistrer un Jëf pour autrui reste
+    # possible chez n'importe quel membre (décision du 2026-10-28).
+    # À la nomination, la LDD du Daara du collecteur y entre d'office.
+    collecte_zones = models.ManyToManyField(
+        'accounts.LDD', blank=True, related_name='collecteurs',
+        verbose_name='Zones de collecte',
+    )
     avatar = models.ImageField(upload_to='avatars/', blank=True, null=True, validators=[validate_upload_size])
     avatar_url = models.URLField(blank=True, null=True)
 
@@ -313,7 +322,28 @@ class User(AbstractUser):
             if update_fields is not None:
                 kwargs['update_fields'] = set(update_fields) | {'is_staff'}
 
+        # Nomination : on ne le sait qu'en relisant le rôle d'AVANT. Une seule
+        # requête, et seulement quand le rôle peut avoir changé — `last_login`
+        # et consorts passent ici avec `update_fields` sans `role`.
+        update_fields = kwargs.get('update_fields')
+        devient_collecteur = False
+        if self.role == self.Role.COLLECTOR and (update_fields is None or 'role' in update_fields):
+            avant = (
+                type(self).objects.filter(pk=self.pk).values_list('role', flat=True).first()
+                if self.pk else None
+            )
+            devient_collecteur = avant != self.Role.COLLECTOR
+
         super().save(*args, **kwargs)
+
+        # Zone par défaut : la LDD de son Daara. Sans elle, un collecteur
+        # fraîchement nommé ne verrait aucune demande tant qu'un administrateur
+        # ne lui aurait rien affecté. Seulement s'il n'a encore AUCUNE zone :
+        # une affectation faite à la main n'est jamais écrasée.
+        if devient_collecteur and self.daara_id and not self.collecte_zones.exists():
+            ldd_id = Daara.objects.filter(pk=self.daara_id).values_list('ldd_id', flat=True).first()
+            if ldd_id:
+                self.collecte_zones.add(ldd_id)
 
     def __str__(self):
         return self.email or self.phone or f"user-{self.pk}"
@@ -400,6 +430,18 @@ class AuditLog(models.Model):
 class PilotageSettings(models.Model):
     enable_salons = models.BooleanField(default=False)
 
+    # L'interrupteur de la collecte en espèces. L'objectif du Kourel est que
+    # tout passe un jour par le paiement mobile et la banque : ce jour-là, on
+    # coupe. Il ne se bascule PAS par le PUT général des réglages — seulement
+    # par un code de vérification envoyé à l'administrateur
+    # (`PilotageSettingsViewSet.collecte`), et la suspension prévient tous les
+    # membres. L'argent déjà encaissé reste à remettre.
+    collecte_physique_active = models.BooleanField(default=True)
+    collecte_modifiee_par = models.ForeignKey(
+        'accounts.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+    collecte_modifiee_le = models.DateTimeField(null=True, blank=True)
+
     def __str__(self):
         return "Paramètres de Pilotage"
 
@@ -412,3 +454,27 @@ class PilotageSettings(models.Model):
         obj, _created = cls.objects.get_or_create(pk=1)
         return obj
 
+
+
+class CodeVerification(models.Model):
+    """Code à usage unique, envoyé par courriel, avant une opération sensible.
+
+    Aujourd'hui : suspendre ou reprendre la collecte en espèces. Le code n'est
+    gardé qu'en EMPREINTE (`make_password`) : une fuite de la base ne livre
+    aucun code utilisable. Voir `accounts.services.code_verification`.
+    """
+
+    user = models.ForeignKey('accounts.User', on_delete=models.CASCADE, related_name='codes_verification')
+    objet = models.CharField(max_length=50)
+    empreinte = models.CharField(max_length=128)
+    expire_le = models.DateTimeField()
+    tentatives = models.PositiveSmallIntegerField(default=0)
+    utilise_le = models.DateTimeField(null=True, blank=True)
+    cree_le = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-cree_le']
+        indexes = [models.Index(fields=['user', 'objet'])]
+
+    def __str__(self):
+        return f"Code {self.objet} pour {self.user} (expire {self.expire_le:%H:%M})"
