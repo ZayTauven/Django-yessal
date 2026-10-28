@@ -6,10 +6,20 @@ from .models import Campaign, CampaignTodo, Fete
 
 
 class FeteSerializer(serializers.ModelSerializer):
+    # Jours d'ici l'événement, comptés par le SERVEUR sur le jour de Dakar
+    # (négatif s'il est passé). Le web les recalculait avec l'horloge de
+    # l'appareil, et lisait « 2026-10-09 » en UTC puis en heure locale : un
+    # jour d'écart dans les Amériques, et n'importe quoi sur un poste mal réglé.
+    days_until = serializers.SerializerMethodField()
+
     class Meta:
         model = Fete
-        fields = ['id', 'name', 'description', 'date', 'recurrence', 'is_active', 'created_by', 'created_at']
+        fields = ['id', 'name', 'description', 'date', 'recurrence', 'is_active', 'created_by', 'created_at',
+                  'days_until']
         read_only_fields = ['created_by', 'created_at']
+
+    def get_days_until(self, obj):
+        return (obj.date - timezone.localdate()).days if obj.date else None
 
 
 class CampaignTodoSerializer(serializers.ModelSerializer):
@@ -64,6 +74,7 @@ class CampaignSerializer(serializers.ModelSerializer):
     is_manageable = serializers.SerializerMethodField()
     days_remaining = serializers.SerializerMethodField()
     is_overdue = serializers.SerializerMethodField()
+    days_until_open = serializers.SerializerMethodField()
 
     class Meta:
         model = Campaign
@@ -74,6 +85,8 @@ class CampaignSerializer(serializers.ModelSerializer):
             'goal_amount',
             'objective',
             'deadline',
+            'opens_on',
+            'days_until_open',
             'status',
             'effective_status',
             'fete',
@@ -127,10 +140,26 @@ class CampaignSerializer(serializers.ModelSerializer):
         return obj.can_be_managed_by(request.user)
 
     def get_days_remaining(self, obj):
-        return max(0, (obj.deadline - timezone.now().date()).days)
+        return max(0, (obj.deadline - timezone.localdate()).days)
 
     def get_is_overdue(self, obj):
-        return obj.deadline < timezone.now().date()
+        return obj.deadline < timezone.localdate()
+
+    def get_days_until_open(self, obj):
+        """Jours avant l'ouverture, 0 s'il est ouvert, `None` sans date d'ouverture."""
+        if not obj.opens_on:
+            return None
+        return max(0, (obj.opens_on - timezone.localdate()).days)
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        opens_on = attrs.get('opens_on', getattr(self.instance, 'opens_on', None))
+        deadline = attrs.get('deadline', getattr(self.instance, 'deadline', None))
+        if opens_on and deadline and opens_on > deadline:
+            raise serializers.ValidationError(
+                {'opens_on': "La date d'ouverture doit précéder la date de clôture."}
+            )
+        return attrs
 
     def validate_organizer(self, value):
         if value is None:

@@ -288,7 +288,13 @@ AUTH_PASSWORD_VALIDATORS = [
 # faut-il le lui demander.
 LANGUAGE_CODE = 'fr-fr'
 
-TIME_ZONE = 'UTC'
+# L'heure de référence du Kourel est celle de Dakar : c'est elle qui dit
+# quel jour on est, quand un Ndiguel s'ouvre et quand il se clôt. Même
+# décalage que l'UTC (+0, sans heure d'été), mais l'intention est écrite :
+# `timezone.localdate()` donne le jour à Touba, quel que soit le serveur.
+# L'heure de l'APPAREIL d'un membre ne décide jamais de rien — elle peut
+# être fausse, et la diaspora vit sur d'autres fuseaux.
+TIME_ZONE = 'Africa/Dakar'
 
 USE_I18N = True
 

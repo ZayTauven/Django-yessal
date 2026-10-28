@@ -358,7 +358,7 @@ class CampaignTodoViewSet(viewsets.ModelViewSet):
             qs = qs.filter(campaign_id=campaign_id)
         if user.role in ['admin', 'chef_daara']:
             return qs
-        return qs.filter(campaign__organizer=user, campaign__deadline__gte=timezone.now().date()).exclude(campaign__status__in=['completed', 'inactive'])
+        return qs.filter(campaign__organizer=user, campaign__deadline__gte=timezone.localdate()).exclude(campaign__status__in=['completed', 'inactive'])
 
     def perform_create(self, serializer):
         """La création vérifie le Ndiguel VISÉ, et pas seulement le rôle.

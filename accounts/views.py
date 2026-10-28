@@ -982,7 +982,7 @@ class AnalyticsViewSet(viewsets.ViewSet):
 
         user = request.user
         role = user.role
-        today = timezone.now().date()
+        today = timezone.localdate()
 
         # Admin can request stats for a specific user
         target_user_id = request.query_params.get('user_id')
@@ -1256,7 +1256,7 @@ class AnalyticsViewSet(viewsets.ViewSet):
             #
             # Désormais : le premier jour est le jour 1, l'échéance est comprise
             # dans le décompte restant, et `écoulés + restants == total`.
-            today = timezone.now().date()
+            today = timezone.localdate()
             anchor_date = c.organizer_assigned_at.date() if c.organizer_assigned_at else c.created_at.date()
             days_total = max(1, (c.deadline - anchor_date).days + 1)
             days_remaining = max(0, (c.deadline - today).days)

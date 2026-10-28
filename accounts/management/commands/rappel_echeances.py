@@ -2,10 +2,10 @@
 
 Seul courriel du catalogue sans déclencheur possible dans une requête : rien
 ne « se passe » à J-5 d'une échéance, il faut aller regarder. D'où une commande,
-lancée par `cron`.
-
-    # tous les jours à 8 h, heure de Dakar (UTC)
-    0 8 * * *  cd /app && python manage.py rappel_echeances
+lancée chaque jour à 8 h, heure de Dakar, par le planificateur
+(`events/management/commands/planificateur.py`, service `scheduler`). Elle
+attendait un `cron` que personne n'avait posé : jusqu'au 2026-10-28, elle
+n'avait jamais tourné sur le VPS.
 
 Idempotente dans la journée : un Ndiguel n'est retenu que si son échéance
 tombe exactement dans l'un des seuils. Relancer la commande le même jour
@@ -51,7 +51,7 @@ class Command(BaseCommand):
                 self.stderr.write("--seuils attend des entiers séparés par des virgules.")
                 return
 
-        aujourd_hui = timezone.now().date()
+        aujourd_hui = timezone.localdate()
         dates_visees = {aujourd_hui + timedelta(days=n): n for n in seuils}
 
         campagnes = (

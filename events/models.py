@@ -44,6 +44,13 @@ class Campaign(models.Model):
     goal_amount = models.DecimalField(max_digits=15, decimal_places=2, blank=True, null=True)
     objective = models.TextField(blank=True, null=True)
     deadline = models.DateField()
+    # Premier jour de collecte, heure de Dakar. Sans lui, « À venir » était un
+    # statut posé à la main, et rien ne basculait le Ndiguel en « En cours » le
+    # jour venu. Facultatif : un Ndiguel sans date d'ouverture garde le statut
+    # qu'on lui donne, comme avant. Avec elle, ce sont les DATES qui décident
+    # (voir `get_effective_status`), calculées par le serveur et jamais par
+    # l'appareil du membre.
+    opens_on = models.DateField(null=True, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
 
     fete = models.ForeignKey('events.Fete', on_delete=models.SET_NULL, null=True, blank=True, related_name='ndiguels')
@@ -63,16 +70,26 @@ class Campaign(models.Model):
         return self.name
 
     def is_management_open(self):
-        today = timezone.now().date()
+        today = timezone.localdate()
         if self.status in [self.Status.COMPLETED, self.Status.INACTIVE]:
             return False
         return self.deadline >= today
 
-    def get_effective_status(self):
+    def get_effective_status(self, today=None):
+        """Le statut qui fait foi, pour le jour de Dakar.
+
+        Clôturé ou suspendu à la main : c'est la main qui l'emporte. Sinon, les
+        dates : avant `opens_on` le Ndiguel est à venir, après `deadline` il
+        est terminé. La fenêtre est inclusive aux deux bouts — ouvert dès le
+        premier jour à 00:00, encore ouvert le dernier jour jusqu'à 23:59.
+        """
         if self.status in [self.Status.COMPLETED, self.Status.INACTIVE]:
             return self.status
-        if self.deadline < timezone.now().date():
+        today = today or timezone.localdate()
+        if self.deadline < today:
             return self.Status.COMPLETED
+        if self.opens_on:
+            return self.Status.PENDING if today < self.opens_on else self.Status.ACTIVE
         return self.status
 
     def can_be_managed_by(self, user):
@@ -101,3 +118,24 @@ class CampaignTodo(models.Model):
 
     def __str__(self):
         return f"{self.title} - {self.campaign.name}"
+
+
+class ExecutionPlanifiee(models.Model):
+    """Dernier passage de chaque tâche du planificateur (`planificateur`).
+
+    C'est la base, et non la mémoire du processus, qui dit si la tâche du jour
+    a tourné : un conteneur redémarré à 9 h ne relance pas le rappel de 8 h,
+    et deux planificateurs lancés par erreur ne l'envoient pas deux fois (la
+    ligne est verrouillée pendant la décision).
+    """
+    nom = models.CharField(max_length=80, unique=True)
+    derniere_execution = models.DateTimeField(null=True, blank=True)
+    dernier_resultat = models.CharField(max_length=20, blank=True)
+    dernier_message = models.TextField(blank=True)
+
+    class Meta:
+        verbose_name = 'Tâche planifiée'
+        verbose_name_plural = 'Tâches planifiées'
+
+    def __str__(self):
+        return f"{self.nom} ({self.derniere_execution or 'jamais'})"
