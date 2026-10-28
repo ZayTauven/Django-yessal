@@ -183,6 +183,19 @@ class DemandeEtEncaissementTests(CircuitEspecesBase):
         # Pas deux fois.
         self.assertEqual(self.client.post(self.url(demande, 'collect')).status_code, 400)
 
+    def test_files_a_collecter_et_ma_caisse(self):
+        demande = Donation.objects.create(
+            campaign=self.campaign, donor=self.other, amount=7500, payment_method='manual',
+        )
+        en_caisse = self.encaisse(10000)
+        Donation.objects.create(campaign=self.campaign, donor=self.other, amount=3000, payment_method='wave')
+        self.client.force_authenticate(self.collector)
+
+        a_collecter = [r['id'] for r in self.client.get(self.list_url, {'a_collecter': 1}).data]
+        self.assertEqual(a_collecter, [demande.pk])
+        caisse = [r['id'] for r in self.client.get(self.list_url, {'ma_caisse': 1}).data]
+        self.assertEqual(caisse, [en_caisse.pk])
+
     def test_un_membre_n_encaisse_pas(self):
         demande = Donation.objects.create(
             campaign=self.campaign, donor=self.member, amount=7500, payment_method='manual',

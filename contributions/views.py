@@ -199,6 +199,22 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
             except (TypeError, ValueError):
                 return Donation.objects.none()
 
+        # Les deux files du collecteur, toujours DANS la portée du rôle :
+        #   ?a_collecter=1 → demandes de collecte ouvertes
+        #   ?ma_caisse=1   → ce que j'ai encaissé et pas encore remis
+        if self.request.query_params.get('a_collecter'):
+            queryset = queryset.filter(
+                payment_method=Donation.PaymentMethod.MANUAL,
+                payment_status=Donation.PaymentStatus.PENDING,
+                collector__isnull=True,
+            ).exclude(donor=user)
+        if self.request.query_params.get('ma_caisse'):
+            queryset = queryset.filter(
+                collector=user,
+                payment_status=Donation.PaymentStatus.COLLECTED,
+                cash_deposit__isnull=True,
+            )
+
         return queryset
 
     def perform_create(self, serializer):

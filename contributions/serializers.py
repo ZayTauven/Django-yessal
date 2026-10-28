@@ -22,6 +22,9 @@ class DonationSerializer(serializers.ModelSerializer):
     donor_ldd_name = serializers.CharField(
         source='donor.daara.ldd.name', read_only=True, default=None
     )
+    # Le collecteur appelle avant de se déplacer : le courriel « Jëf à
+    # collecter » portait déjà ce numéro, l'API non.
+    donor_phone = serializers.CharField(source='donor.phone', read_only=True, default=None)
     campaign_name = serializers.ReadOnlyField(source='campaign.name')
     beneficiary_name = serializers.SerializerMethodField()
     collector_name = serializers.ReadOnlyField(source='collector.get_full_name')
