@@ -105,8 +105,12 @@ class IntegriteEcritureTests(CircuitEspecesBase):
         self.assertFalse(Donation.objects.exists())
 
     def test_montant_negatif_ou_nul_refuse(self):
-        for montant in (-5000, 0):
+        for montant in (-5000, 0, 99):
             self.assertEqual(self.creer(self.member, amount=montant).status_code, 400)
+
+    def test_plancher_de_100_fcfa_accepte(self):
+        # Décision du porteur : aucune offrande n'est trop modeste.
+        self.assertEqual(self.creer(self.member, amount=100).status_code, status.HTTP_201_CREATED)
 
     def test_moyen_herite_refuse(self):
         self.assertEqual(self.creer(self.member, payment_method='paypal').status_code, 400)

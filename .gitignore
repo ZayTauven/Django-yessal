@@ -14,5 +14,7 @@ core/.env*
 *.tmp
 __pycache__/
 db.sqlite3
+# Base des tests (`core/settings.py`, TESTING) : créée par tout `manage.py test`.
+test_db.sqlite3
 media/
 staticfiles/

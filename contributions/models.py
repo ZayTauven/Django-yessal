@@ -80,6 +80,11 @@ class Donation(models.Model):
         FAILED = 'failed', _('Échoué')
         CANCELLED = 'cancelled', _('Annulé')
 
+    # Le plancher d'un Jëf, volontairement bas : sur une plateforme
+    # confrérique, refuser une offrande modeste serait mal reçu. Le web
+    # (`lib/jef.ts`) et le mobile (`donate.tsx`) affichent la même valeur.
+    MIN_AMOUNT = 100
+
     # Ce qu'on peut ÉMETTRE aujourd'hui. Les valeurs héritées restent
     # lisibles sur les anciens Jëfs, jamais acceptées sur un nouveau.
     CURRENT_METHODS = (

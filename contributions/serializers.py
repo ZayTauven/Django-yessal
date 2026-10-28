@@ -42,8 +42,10 @@ class DonationSerializer(serializers.ModelSerializer):
     def validate_amount(self, value):
         # Rien ne l'empêchait : un Jëf de -5 000 FCFA s'enregistrait et
         # retranchait son montant du total d'un Ndiguel une fois confirmé.
-        if value <= 0:
-            raise serializers.ValidationError("Le montant doit être supérieur à zéro.")
+        if value < Donation.MIN_AMOUNT:
+            raise serializers.ValidationError(
+                f"Le montant minimum d'un Jëf est de {Donation.MIN_AMOUNT} FCFA."
+            )
         return value
 
     def validate_payment_method(self, value):
