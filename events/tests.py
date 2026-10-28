@@ -1,6 +1,7 @@
-from datetime import date
+from datetime import date, timedelta
 
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -64,7 +65,10 @@ class FeteNotificationTests(APITestCase):
 
     def test_admin_date_update_creates_notifications(self):
         url = reverse("fetes-detail", args=[self.fete.id])
-        payload = {"date": "2026-05-21"}
+        # Une date À VENIR : pour une date passée, c'est l'occurrence suivante
+        # que l'on annonce (la référence d'une série n'est pas sa prochaine date).
+        nouvelle = timezone.localdate() + timedelta(days=20)
+        payload = {"date": nouvelle.isoformat()}
 
         response = self.client.patch(url, payload, format="json")
 
@@ -73,7 +77,7 @@ class FeteNotificationTests(APITestCase):
         self.assertTrue(
             Notification.objects.filter(
                 title="Prochaine Tabaski",
-                message="Prochaine Tabaski le 21/05/2026.",
+                message=f"Prochaine Tabaski le {nouvelle:%d/%m/%Y}.",
             ).exists()
         )
 

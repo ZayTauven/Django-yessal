@@ -62,6 +62,9 @@ TACHES = (
     # Rappels J-15/7/2 aux organisateurs, et alerte de clôture avec des
     # espèces encore en route (Ndiguels dont l'échéance était hier).
     Tache('rappel_echeances', time(8, 0)),
+    # Éditions des Ndiguels récurrents créées à l'avance, et annonce (push)
+    # de celles qui s'ouvrent. À 7 h, pas à minuit : on ne réveille personne.
+    Tache('editions_ndiguels', time(7, 0)),
 )
 
 

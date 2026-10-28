@@ -11,15 +11,63 @@ class FeteSerializer(serializers.ModelSerializer):
     # l'appareil, et lisait « 2026-10-09 » en UTC puis en heure locale : un
     # jour d'écart dans les Amériques, et n'importe quoi sur un poste mal réglé.
     days_until = serializers.SerializerMethodField()
+    # La prochaine occurrence calculée par la règle de la série (heure de
+    # Dakar). `date` n'est que la référence : pour un hebdomadaire créé le
+    # 2 octobre, elle resterait le 2 octobre pour toujours.
+    prochaine_date = serializers.SerializerMethodField()
+    editions_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Fete
         fields = ['id', 'name', 'description', 'date', 'recurrence', 'is_active', 'created_by', 'created_at',
-                  'days_until']
+                  'days_until', 'prochaine_date', 'editions_count',
+                  'hijri_mois', 'hijri_jour', 'auto_editions', 'ouvre_jours_avant', 'ferme_jours_apres',
+                  'objectif_par_defaut']
         read_only_fields = ['created_by', 'created_at']
 
+    def _prochaine(self, obj):
+        from .occurrences import prochaine
+
+        cache = self.context.setdefault('_prochaines', {})
+        if obj.pk not in cache:
+            cache[obj.pk] = prochaine(obj, timezone.localdate())
+        return cache[obj.pk]
+
+    def get_prochaine_date(self, obj):
+        d = self._prochaine(obj)
+        return d.isoformat() if d else None
+
     def get_days_until(self, obj):
-        return (obj.date - timezone.localdate()).days if obj.date else None
+        d = self._prochaine(obj) or obj.date
+        return (d - timezone.localdate()).days if d else None
+
+    def get_editions_count(self, obj):
+        return obj.ndiguels.count()
+
+    def validate_hijri_mois(self, value):
+        if value is not None and not 1 <= value <= 12:
+            raise serializers.ValidationError("Le mois hégirien va de 1 (Muharram) à 12 (Dhou al-Hijja).")
+        return value
+
+    def validate_hijri_jour(self, value):
+        if value is not None and not 1 <= value <= 30:
+            raise serializers.ValidationError("Le jour hégirien va de 1 à 30.")
+        return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        get = lambda k: attrs.get(k, getattr(self.instance, k, None))
+        if get('auto_editions'):
+            hijri = get('recurrence') == Fete.Recurrence.ANNUAL_HIJRI and get('hijri_mois') and get('hijri_jour')
+            if not get('date') and not hijri:
+                raise serializers.ValidationError(
+                    {'date': "Une date de référence est nécessaire pour générer les éditions."}
+                )
+            if get('recurrence') == Fete.Recurrence.NONE:
+                raise serializers.ValidationError(
+                    {'auto_editions': "Un événement non récurrent n'a pas d'éditions à générer."}
+                )
+        return attrs
 
 
 class CampaignTodoSerializer(serializers.ModelSerializer):
@@ -87,6 +135,8 @@ class CampaignSerializer(serializers.ModelSerializer):
             'deadline',
             'opens_on',
             'days_until_open',
+            'occurrence_date',
+            'a_confirmer',
             'status',
             'effective_status',
             'fete',
@@ -109,7 +159,11 @@ class CampaignSerializer(serializers.ModelSerializer):
             'is_overdue',
             'illustrative_photo',
         ]
-        read_only_fields = ['created_by', 'created_at', 'updated_at', 'organizer_assigned_at']
+        # `occurrence_date` et `a_confirmer` ne bougent que par la série
+        # (génération, « Confirmer la date ») : la contrainte d'unicité et la
+        # visibilité des membres en dépendent.
+        read_only_fields = ['created_by', 'created_at', 'updated_at', 'organizer_assigned_at',
+                            'occurrence_date', 'a_confirmer']
 
     def get_collected_amount(self, obj):
         return obj.donations.filter(payment_status='confirmed').aggregate(total=Sum('amount'))['total'] or 0

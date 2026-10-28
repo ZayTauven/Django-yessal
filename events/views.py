@@ -1,4 +1,4 @@
-﻿from django.db.models import Sum
+﻿from django.db.models import F, Sum
 from django.utils import timezone
 
 from rest_framework import filters, permissions, status, viewsets
@@ -13,6 +13,7 @@ from comms.notify import notify, notify_many
 from contributions.models import Donation
 
 from .models import Campaign, CampaignTodo, Fete
+from .occurrences import prochaine
 from .serializers import CampaignSerializer, CampaignTodoSerializer, FeteSerializer
 
 
@@ -76,6 +77,23 @@ class FeteViewSet(viewsets.ModelViewSet):
             return [permissions.IsAuthenticated()]
         return [permissions.IsAdminUser()]
 
+    @action(detail=True, methods=['post'], url_path='prochaine-edition')
+    def prochaine_edition(self, request, pk=None):
+        """« Préparer la prochaine édition », sans attendre le planificateur."""
+        from .editions import preparer_prochaine
+
+        fete = self.get_object()
+        edition, creee = preparer_prochaine(fete, timezone.localdate())
+        if not edition:
+            return Response(
+                {'detail': "Cette série n'a pas de prochaine date : renseignez sa date de référence et sa récurrence."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(
+            {**CampaignSerializer(edition, context={'request': request}).data, 'creee': creee},
+            status=status.HTTP_201_CREATED if creee else status.HTTP_200_OK,
+        )
+
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
 
@@ -87,6 +105,12 @@ class FeteViewSet(viewsets.ModelViewSet):
         # Notify community only when the fete date changes.
         if previous_date == fete.date or fete.date is None:
             return
+        # `date` est la RÉFÉRENCE d'une série : on annonce la prochaine
+        # occurrence qu'elle donne, pas la référence elle-même (le Toggou de
+        # référence du 2 octobre aurait été annoncé comme « prochain »).
+        prochaine_date = prochaine(fete, timezone.localdate())
+        if prochaine_date is None:
+            return
 
         target_roles = [User.Role.MEMBER, User.Role.COLLECTOR, User.Role.CHEF_DAARA, User.Role.TUTELLE]
         # `only('id')` ne suffit plus : l'envoi a besoin de l'adresse et du
@@ -95,7 +119,7 @@ class FeteViewSet(viewsets.ModelViewSet):
             User.objects.filter(is_active=True, role__in=target_roles)
             .only('id', 'email', 'first_name')
         )
-        formatted_date = fete.date.strftime('%d/%m/%Y')
+        formatted_date = prochaine_date.strftime('%d/%m/%Y')
 
         # Seul envoi de masse du produit : il part dans un fil séparé, sur une
         # seule connexion SMTP. Une boucle d'envois unitaires tiendrait la
@@ -106,6 +130,9 @@ class FeteViewSet(viewsets.ModelViewSet):
             titre=f"Prochaine {fete.name}",
             message=f"Prochaine {fete.name} le {formatted_date}.",
             contexte={'fete': fete.name, 'date': formatted_date},
+            # Pas de courriel de masse pour un hebdomadaire : chaque retouche
+            # de la série écrirait à tout le Kourel. La notification suffit.
+            courriel=fete.recurrence != Fete.Recurrence.WEEKLY,
         )
 
     @action(detail=True, methods=['get'], url_path='etat')
@@ -113,7 +140,12 @@ class FeteViewSet(viewsets.ModelViewSet):
         fete = self.get_object()
         from contributions.models import Donation
 
-        campaigns = Campaign.objects.filter(fete=fete).select_related('daara', 'organizer').order_by('-created_at')
+        campaigns = (
+            Campaign.objects.filter(fete=fete).select_related('daara', 'organizer')
+            .order_by(F('occurrence_date').desc(nulls_last=True), '-created_at')
+        )
+        if request.user.role != User.Role.ADMIN:
+            campaigns = campaigns.exclude(a_confirmer=True)
         donations = (
             Donation.objects
             .filter(campaign__fete=fete, payment_status=Donation.PaymentStatus.CONFIRMED)
@@ -152,6 +184,9 @@ class FeteViewSet(viewsets.ModelViewSet):
                 'progress_pct': progress,
                 'status': c.get_effective_status(),
                 'deadline': c.deadline.isoformat(),
+                'opens_on': c.opens_on.isoformat() if c.opens_on else None,
+                'occurrence_date': c.occurrence_date.isoformat() if c.occurrence_date else None,
+                'a_confirmer': c.a_confirmer,
                 'daara_name': c.daara.name if c.daara else None,
                 'organizer_name': c.organizer.get_full_name().strip() if c.organizer else None,
             })
@@ -162,6 +197,11 @@ class FeteViewSet(viewsets.ModelViewSet):
             'date': fete.date.isoformat() if fete.date else None,
             'description': fete.description,
             'recurrence': fete.get_recurrence_display(),
+            'recurrence_code': fete.recurrence,
+            'prochaine_date': (lambda d: d.isoformat() if d else None)(prochaine(fete, timezone.localdate())),
+            'auto_editions': fete.auto_editions,
+            'ouvre_jours_avant': fete.ouvre_jours_avant,
+            'ferme_jours_apres': fete.ferme_jours_apres,
             'is_active': fete.is_active,
             'total_collected': str(total_collected),
             'donation_count': donation_count,
@@ -223,6 +263,10 @@ class CampaignViewSet(viewsets.ModelViewSet):
         """
         qs = super().get_queryset()
         role = getattr(self.request.user, 'role', None)
+        # Une édition à la date lunaire pas encore confirmée n'existe que pour
+        # l'administration : la date peut encore bouger d'un jour ou deux.
+        if role != User.Role.ADMIN:
+            qs = qs.exclude(a_confirmer=True)
         if self.action == 'list' and role in self.ROLES_SANS_NDIGUELS_TERMINES:
             qs = (
                 qs.exclude(status=Campaign.Status.COMPLETED)
@@ -264,6 +308,30 @@ class CampaignViewSet(viewsets.ModelViewSet):
         ):
             from contributions.services.collecte import prevenir_cloture_avec_especes
             prevenir_cloture_avec_especes(campaign)
+
+    @action(detail=True, methods=['post'], url_path='confirmer-date')
+    def confirmer_date(self, request, pk=None):
+        """Confirme (ou corrige) la date d'une édition hégirienne estimée.
+
+        Tant qu'elle n'est pas confirmée, l'édition reste invisible aux membres
+        et refuse les Jëfs : la date suit l'annonce, pas le calcul.
+        """
+        from datetime import date as date_cls
+
+        from .editions import confirmer_date
+
+        if request.user.role != User.Role.ADMIN:
+            raise PermissionDenied("Seule l'administration confirme une date.")
+        edition = self.get_object()
+        try:
+            jour = date_cls.fromisoformat(str(request.data.get('date', '')))
+        except ValueError:
+            return Response({'date': ["Date attendue au format AAAA-MM-JJ."]}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            confirmer_date(edition, jour)
+        except ValueError as e:
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(CampaignSerializer(edition, context={'request': request}).data)
 
     def _notify_organizer(self, campaign):
         if not campaign.organizer:

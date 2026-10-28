@@ -6,8 +6,26 @@ from core.validators import downscale_image, validate_upload_size
 
 
 class Fete(models.Model):
+    """Un Événement — à l'écran, un « Ndiguel récurrent » : la SÉRIE.
+
+    Chantier « gestion des Ndiguels » (2026-10-28). Le porteur pense « fête =
+    Ndiguel » ; le code garde deux objets, et c'est ce qui permet de distinguer
+    dans le temps chaque Toggou Adiouma. La série dit QUAND (la règle de
+    récurrence, la fenêtre de collecte) et ce que chaque édition reprend par
+    défaut (description, objectif) ; chaque ÉDITION est un `Campaign` daté,
+    avec son propre propos, sa photo et son total.
+
+    `date` est la date de RÉFÉRENCE de la série (une occurrence connue), plus
+    la « prochaine date » : celle-ci se calcule (`occurrences.prochaine`). Le
+    champ n'est jamais avancé tout seul — le modifier prévient tout le Kourel
+    par courriel.
+    """
     class Recurrence(models.TextChoices):
         ANNUAL = 'annual', 'Annuelle'
+        # Magal (18 Safar), Tamkharit… : une date grégorienne fixe dériverait
+        # d'environ onze jours par an. La date est ESTIMÉE (calendrier
+        # tabulaire) puis confirmée par l'administration, qui suit l'annonce.
+        ANNUAL_HIJRI = 'annual_hijri', 'Annuelle (calendrier hégirien)'
         QUARTERLY = 'quarterly', 'Trimestrielle'
         WEEKLY = 'weekly', 'Hebdomadaire'
         NONE = 'none', 'Non récurrente'
@@ -17,6 +35,23 @@ class Fete(models.Model):
     date = models.DateField(null=True, blank=True)
     recurrence = models.CharField(max_length=20, choices=Recurrence.choices, default=Recurrence.ANNUAL)
     is_active = models.BooleanField(default=True)
+
+    # ── Calendrier hégirien (récurrence `annual_hijri`) ──────────────────────
+    # Déduits de `date` à l'enregistrement s'ils manquent ; l'administration
+    # peut les fixer elle-même (18 Safar), plus sûr que la conversion.
+    hijri_mois = models.PositiveSmallIntegerField(null=True, blank=True)
+    hijri_jour = models.PositiveSmallIntegerField(null=True, blank=True)
+
+    # ── Éditions ─────────────────────────────────────────────────────────────
+    # Le planificateur crée chaque édition à l'avance (`editions_ndiguels`).
+    # Sans génération automatique, l'administration la prépare d'un clic.
+    auto_editions = models.BooleanField(default=False)
+    # Fenêtre de collecte autour du jour de l'événement, heure de Dakar. Pour
+    # le Toggou du vendredi : 1 et 1 — du jeudi au samedi, pour que la diaspora
+    # des Amériques puisse donner son vendredi soir.
+    ouvre_jours_avant = models.PositiveSmallIntegerField(default=0)
+    ferme_jours_apres = models.PositiveSmallIntegerField(default=0)
+    objectif_par_defaut = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='created_fetes')
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -29,6 +64,12 @@ class Fete(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.get_recurrence_display()})"
+
+    def save(self, *args, **kwargs):
+        if self.recurrence == self.Recurrence.ANNUAL_HIJRI and self.date and not (self.hijri_mois and self.hijri_jour):
+            from .occurrences import vers_hegire
+            _, self.hijri_mois, self.hijri_jour = vers_hegire(self.date)
+        super().save(*args, **kwargs)
 
 
 class Campaign(models.Model):
@@ -51,6 +92,17 @@ class Campaign(models.Model):
     # (voir `get_effective_status`), calculées par le serveur et jamais par
     # l'appareil du membre.
     opens_on = models.DateField(null=True, blank=True)
+
+    # ── Édition d'une série (`fete`) ────────────────────────────────────────
+    # Le jour de l'événement que cette édition prépare. Une seule édition par
+    # série et par date : la génération peut tourner deux fois, ou rattraper
+    # un serveur arrêté, sans jamais créer de doublon.
+    occurrence_date = models.DateField(null=True, blank=True)
+    # Date lunaire estimée, pas encore confirmée par l'administration : rien
+    # n'est montré aux membres, aucun Jëf n'est accepté.
+    a_confirmer = models.BooleanField(default=False)
+    # Les membres ont été prévenus de l'ouverture (une seule fois).
+    ouverture_annoncee_le = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
 
     fete = models.ForeignKey('events.Fete', on_delete=models.SET_NULL, null=True, blank=True, related_name='ndiguels')
@@ -65,6 +117,13 @@ class Campaign(models.Model):
     class Meta:
         verbose_name = 'Ndiguel'
         verbose_name_plural = 'Ndiguels'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['fete', 'occurrence_date'],
+                condition=models.Q(fete__isnull=False, occurrence_date__isnull=False),
+                name='une_edition_par_serie_et_par_date',
+            ),
+        ]
 
     def __str__(self):
         return self.name
@@ -85,6 +144,8 @@ class Campaign(models.Model):
         """
         if self.status in [self.Status.COMPLETED, self.Status.INACTIVE]:
             return self.status
+        if self.a_confirmer:
+            return self.Status.PENDING
         today = today or timezone.localdate()
         if self.deadline < today:
             return self.Status.COMPLETED
