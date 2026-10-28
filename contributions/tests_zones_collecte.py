@@ -210,3 +210,44 @@ class GestionCollecteursTests(ZonesBase):
 
         # Paris est désormais couvert : Aïda peut demander une collecte.
         self.assertEqual(self.creer(self.membre_paris).status_code, 201)
+
+
+class ClotureTests(ZonesBase):
+    """Décision du 2026-10-28 : la clôture n'arrête pas les collecteurs, mais
+    l'administration est prévenue des espèces restées en route."""
+
+    titre = 'Ndiguel clôturé avec des espèces en route'
+
+    def test_cloture_explicite_previent_les_admins(self):
+        d = self.demande(self.membre_dakar)
+        self.client.force_authenticate(self.admin)
+        r = self.client.patch(
+            reverse('campaigns-detail', args=[self.campaign.pk]), {'status': 'completed'}, format='json',
+        )
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertTrue(Notification.objects.filter(user=self.admin, title__startswith=self.titre).exists())
+
+        # Le collecteur encaisse toujours ce qui a été promis avant.
+        self.client.force_authenticate(self.col_dakar)
+        self.assertEqual(self.client.post(self.url(d, 'collect')).status_code, 200)
+
+    def test_rien_en_route_rien_a_dire(self):
+        self.client.force_authenticate(self.admin)
+        self.client.patch(reverse('campaigns-detail', args=[self.campaign.pk]), {'status': 'completed'}, format='json')
+        self.assertFalse(Notification.objects.filter(title__startswith=self.titre).exists())
+
+    def test_echeance_passee_hier(self):
+        from datetime import timedelta
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        self.campaign.status = Campaign.Status.ACTIVE
+        self.campaign.deadline = timezone.now().date() - timedelta(days=1)
+        self.campaign.save()
+        Donation.objects.create(
+            campaign=self.campaign, donor=self.membre_dakar, amount=2000, payment_method='manual',
+            payment_status='collected', collector=self.col_dakar, collected_at=timezone.now(),
+        )
+        call_command('rappel_echeances', stdout=StringIO())
+        self.assertTrue(Notification.objects.filter(user=self.admin, title__startswith=self.titre).exists())

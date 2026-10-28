@@ -108,6 +108,25 @@ class Command(BaseCommand):
             self.stdout.write(ligne)
             envoyes += 1
 
+        # Clôture IMPLICITE : l'échéance d'hier est passée, le Ndiguel est
+        # désormais terminé sans que rien ne se soit écrit en base. C'est le
+        # seul moment où l'on peut prévenir les admins des espèces restées en
+        # route — la clôture explicite, elle, le fait dans `perform_update`.
+        from contributions.services.collecte import especes_en_suspens, prevenir_cloture_avec_especes
+
+        hier = aujourd_hui - timedelta(days=1)
+        for campagne in Campaign.objects.filter(status=Campaign.Status.ACTIVE, deadline=hier):
+            demandes, encaisses = especes_en_suspens(campagne)
+            if not demandes.exists() and not encaisses.exists():
+                continue
+            self.stdout.write(self.style.WARNING(
+                f"  « {campagne.name} » clôturé hier avec {demandes.count()} demande(s) et "
+                f"{encaisses.count()} encaissement(s) en espèces en suspens."
+            ))
+            if not simuler:
+                prevenir_cloture_avec_especes(campagne)
+            envoyes += 1
+
         if not envoyes:
             self.stdout.write(self.style.SUCCESS(
                 "Aucun Ndiguel n'arrive à échéance aux seuils "

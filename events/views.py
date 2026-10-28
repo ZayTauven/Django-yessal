@@ -249,9 +249,21 @@ class CampaignViewSet(viewsets.ModelViewSet):
             assigned_at = timezone.now()
         if new_organizer is None:
             assigned_at = None
+        etait_ouvert = current.get_effective_status() not in (
+            Campaign.Status.COMPLETED, Campaign.Status.INACTIVE,
+        )
         campaign = serializer.save(organizer_assigned_at=assigned_at)
         if campaign.organizer and campaign.organizer != old_organizer:
             self._notify_organizer(campaign)
+
+        # Clôture explicite : si des espèces sont encore en route, les admins
+        # le savent. La clôture n'arrête pas les collecteurs (décision du
+        # 2026-10-28) ; elle ne doit pas non plus faire oublier cet argent.
+        if etait_ouvert and campaign.get_effective_status() in (
+            Campaign.Status.COMPLETED, Campaign.Status.INACTIVE,
+        ):
+            from contributions.services.collecte import prevenir_cloture_avec_especes
+            prevenir_cloture_avec_especes(campaign)
 
     def _notify_organizer(self, campaign):
         if not campaign.organizer:

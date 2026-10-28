@@ -48,3 +48,56 @@ def disponibilite(user) -> dict:
     if not collecteurs_de_zone(zone_de(user)).exists():
         return {'active': True, 'disponible': False, 'raison': 'hors_zone'}
     return {'active': True, 'disponible': True, 'raison': None}
+
+
+def especes_en_suspens(campaign):
+    """L'argent en espèces d'un Ndiguel qui n'a pas fini son circuit.
+
+    Rend `(demandes, encaisses)` : les demandes de collecte encore ouvertes ou
+    prises, et les Jëfs encaissés pas encore remis à l'administration.
+    """
+    from contributions.models import Donation
+
+    base = Donation.objects.filter(campaign=campaign, payment_method=Donation.PaymentMethod.MANUAL)
+    return (
+        base.filter(payment_status=Donation.PaymentStatus.PENDING),
+        base.filter(payment_status=Donation.PaymentStatus.COLLECTED, cash_deposit__isnull=True),
+    )
+
+
+def prevenir_cloture_avec_especes(campaign) -> bool:
+    """Prévient les administrateurs qu'un Ndiguel se clôt avec des espèces en route.
+
+    Décision du 2026-10-28 : la clôture ne ferme PAS la porte aux collecteurs —
+    ils peuvent encore encaisser et remettre ce qui a été promis ou reçu avant.
+    Mais l'administration doit le savoir, sinon ces sommes restent en suspens
+    sans que personne ne les réclame. Rend `True` si un message est parti.
+    """
+    from django.db.models import Sum
+
+    from comms.notify import administrateurs, notify_many
+    from contributions.views import montant_lisible
+
+    demandes, encaisses = especes_en_suspens(campaign)
+    nb_d, nb_e = demandes.count(), encaisses.count()
+    if not nb_d and not nb_e:
+        return False
+
+    total = (demandes.aggregate(t=Sum('amount'))['t'] or 0) + (encaisses.aggregate(t=Sum('amount'))['t'] or 0)
+    morceaux = []
+    if nb_d:
+        morceaux.append(f"{nb_d} demande(s) de collecte pas encore encaissée(s)")
+    if nb_e:
+        morceaux.append(f"{nb_e} Jëf(s) encaissé(s) pas encore remis")
+    notify_many(
+        administrateurs(),
+        code='cloture_especes',
+        titre=f"Ndiguel clôturé avec des espèces en route : {campaign.name}",
+        message=(
+            f"« {campaign.name} » est clôturé alors qu'il reste {' et '.join(morceaux)}, "
+            f"soit {montant_lisible(total)} FCFA. Les collecteurs peuvent encore les "
+            "encaisser et les remettre."
+        ),
+        courriel=False,
+    )
+    return True
