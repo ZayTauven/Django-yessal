@@ -85,13 +85,23 @@ def send_fcm_push(user_id: int, title: str, body: str, data: dict | None = None)
         )
         batch_response = messaging.send_each_for_multicast(multicast)
 
-        # Remove invalidated tokens
-        invalid_tokens = []
-        for idx, resp in enumerate(batch_response.responses):
-            if not resp.success and resp.exception:
-                code = getattr(resp.exception, 'code', '')
-                if code in ('registration-token-not-registered', 'invalid-argument'):
-                    invalid_tokens.append(tokens[idx])
+        # Les jetons DÉFINITIVEMENT morts sortent de la base : application
+        # désinstallée ou réinstallée (`UnregisteredError`), ou jeton émis pour
+        # un autre projet Firebase (`SenderIdMismatchError`).
+        #
+        # On teste la CLASSE, pas le code. Le filtre précédent attendait
+        # 'registration-token-not-registered', nom de l'ancien SDK ;
+        # firebase_admin 7 rend `code='NOT_FOUND'`. Rien n'était jamais purgé :
+        # en production le 2026-10-29, 3 jetons sur 10 échouaient à chaque envoi.
+        #
+        # Surtout PAS `InvalidArgumentError` : il désigne aussi une charge mal
+        # formée, et purger sur lui viderait d'un coup tous les jetons du membre.
+        morts = (messaging.UnregisteredError, messaging.SenderIdMismatchError)
+        invalid_tokens = [
+            tokens[idx]
+            for idx, resp in enumerate(batch_response.responses)
+            if not resp.success and isinstance(resp.exception, morts)
+        ]
         if invalid_tokens:
             FCMToken.objects.filter(token__in=invalid_tokens).delete()
     except Exception:

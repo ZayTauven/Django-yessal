@@ -48,3 +48,43 @@ class EnvoiFcmTests(TestCase):
         self.assertEqual(message.notification.body, 'Corps')
         self.assertEqual(message.data, {'url': '/dashboard/notifications'})
         self.assertEqual(message.tokens, ['jeton-android'])
+
+
+class PurgeDesJetonsTests(TestCase):
+    """Quels jetons sortent de la base après un échec d'envoi.
+
+    La purge attendait les codes de l'ancien SDK ('registration-token-not-
+    registered') ; firebase_admin 7 rend `UnregisteredError` avec
+    `code='NOT_FOUND'`. Rien n'était purgé : en production le 2026-10-29,
+    3 jetons sur 10 échouaient à chaque envoi.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(email='m@ex.org', password='x')
+        for jeton in ('vivant', 'desinstalle', 'autre-projet', 'charge-invalide'):
+            FCMToken.objects.create(user=self.user, token=jeton, device_type='android')
+
+    def test_seuls_les_jetons_definitivement_morts_sont_purges(self):
+        from firebase_admin import exceptions, messaging
+
+        erreurs = {
+            'desinstalle': messaging.UnregisteredError('Requested entity was not found.'),
+            'autre-projet': messaging.SenderIdMismatchError('SenderId mismatch'),
+            # Peut venir de la CHARGE et non du jeton : ne jamais purger dessus.
+            'charge-invalide': exceptions.InvalidArgumentError('Invalid payload'),
+        }
+
+        def repondre(message):
+            return SimpleNamespace(responses=[
+                SimpleNamespace(success=jeton not in erreurs, exception=erreurs.get(jeton))
+                for jeton in message.tokens
+            ])
+
+        with mock.patch('firebase_admin._apps', {'[DEFAULT]': object()}), \
+                mock.patch('firebase_admin.messaging.send_each_for_multicast', side_effect=repondre):
+            send_fcm_push(self.user.pk, 'Titre', 'Corps')
+
+        self.assertEqual(
+            sorted(FCMToken.objects.values_list('token', flat=True)),
+            ['charge-invalide', 'vivant'],
+        )
