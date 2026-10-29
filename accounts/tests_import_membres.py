@@ -210,6 +210,23 @@ class ApercuEtCourrielsTests(Socle):
         self.assertEqual(len(rappels), 1)
         self.assertTrue(User.objects.filter(email="awa@yessal.org").exists())
 
+    def test_le_mot_de_passe_n_est_hache_qu_une_fois(self):
+        """« DU KOUREL.xlsx », 260 lignes : 0,44 s de hachage par ligne, et gunicorn
+        tuait la requête à 30 s — aperçu compris. Un hachage pour tout le fichier."""
+        from unittest.mock import patch
+
+        from accounts.services import user_import
+
+        lignes = [(f"P{i}", "Diop", f"m{i}@yessal.org", "", "", "", "") for i in range(40)]
+        with patch.object(user_import, "make_password", wraps=user_import.make_password) as hacher, \
+                patch.object(User, "set_password", side_effect=AssertionError("hachage par ligne")):
+            r = self.importer(lignes)
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(hacher.call_count, 1)
+        compte = User.objects.get(email="m7@yessal.org")
+        self.assertTrue(compte.check_password(MOT_DE_PASSE_PAR_DEFAUT))
+        self.assertTrue(compte.must_change_password)
+
 
 class AccueilTests(Socle):
     def membre(self, **champs):

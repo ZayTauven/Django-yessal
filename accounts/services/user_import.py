@@ -50,6 +50,7 @@ import difflib
 from dataclasses import dataclass, field
 
 import openpyxl
+from django.contrib.auth.hashers import make_password
 from django.db import IntegrityError, transaction
 
 from accounts.models import Daara, LDD, User
@@ -334,6 +335,12 @@ def importer(fichier, *, request, apercu: bool = False) -> Rapport:
 
     index = IndexDaaras()
     crees: list[User] = []
+    # Haché UNE fois pour tout le fichier : tous les comptes importés reçoivent
+    # ce même mot de passe, connu de l'administrateur et à changer au premier
+    # accès. Un hachage par ligne coûtait 0,44 s ; 260 lignes dépassaient le
+    # délai de gunicorn (30 s), aperçu compris, et la requête mourait. Le
+    # même sel pour tous ne révèle rien de plus : le mot de passe est commun.
+    hache = make_password(MOT_DE_PASSE_PAR_DEFAUT)
 
     with transaction.atomic():
         for brute in lignes:
@@ -382,7 +389,7 @@ def importer(fichier, *, request, apercu: bool = False) -> Rapport:
                 # Les courriels partent en un seul envoi groupé, après la
                 # transaction : un par compte, en série, ferait dépasser le
                 # délai de la requête dès quelques centaines de lignes.
-                context={"request": request, "courriel_differe": True},
+                context={"request": request, "courriel_differe": True, "mot_de_passe_hache": hache},
             )
             if not serializer.is_valid():
                 resultat.motif = _erreurs_en_texte(serializer.errors)
