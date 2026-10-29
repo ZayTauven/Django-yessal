@@ -49,6 +49,16 @@ PHRASES_NOMMEES = [
     "Un Jëf de plus pour {ndiguel} : merci {prenom} !",
     "{nom} soutient {ndiguel}. Alhamdoulillah.",
 ]
+PHRASES_DIASPORA_NOMMEES = [
+    "{nom} envoie son Jëf pour {ndiguel} depuis la diaspora.",
+    "De loin, mais présent : {nom} soutient {ndiguel}.",
+    "{nom} répond au Ndiguel « {ndiguel} » depuis l'étranger.",
+]
+PHRASES_DIASPORA_ANONYMES = [
+    "Un membre de la diaspora a fait son Jëf pour {ndiguel}.",
+    "Depuis la diaspora, un Jëf de plus pour {ndiguel}.",
+    "La diaspora répond au Ndiguel « {ndiguel} ».",
+]
 PHRASES_ANONYMES = [
     "{qui} a fait son Jëf pour {ndiguel}.",
     "Un nouveau Jëf pour {ndiguel}, dans la discrétion.",
@@ -112,10 +122,8 @@ def composer_carte(donation, rang):
         # Une fois sur deux seulement : dans un Kourel où la diaspora donne
         # beaucoup, la même carte turquoise revenait six fois sur dix.
         illustration = {'variant': 'diaspora', 'picto': 'diaspora', 'tone': 'teal'}
-        texte = (
-            f"{nom_de(donor)} envoie son Jëf pour {ndiguel} depuis la diaspora."
-            if public else f"Un membre de la diaspora a fait son Jëf pour {ndiguel}."
-        )
+        phrases = PHRASES_DIASPORA_NOMMEES if public else PHRASES_DIASPORA_ANONYMES
+        texte = phrases[(graine // 2) % len(phrases)].format(nom=nom_de(donor), ndiguel=ndiguel)
     elif graine % 3 == 0 and donation.campaign.illustrative_photo:
         illustration = {'variant': 'photo', 'photo_url': donation.campaign.illustrative_photo.url}
     else:
