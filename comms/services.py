@@ -34,6 +34,22 @@ pusher_client = (
     else None
 )
 
+#: Au-delà de cet effectif, un salon ne pousse plus chaque message sur les
+#: téléphones : seulement les réponses et les mentions. Un salon de Daara de
+#: 400 talubés qui vibre à chaque « Amine » se fait mettre en sourdine — et
+#: avec lui, le message qui comptait vraiment.
+SEUIL_GRAND_SALON = 50
+
+#: Pusher accepte au plus 100 canaux par appel.
+PUSHER_CANAUX_PAR_APPEL = 100
+
+
+def lancer_en_arriere_plan(fn):
+    """Exécute `fn` hors de la requête. Point unique, que les tests remplacent."""
+    import threading
+    threading.Thread(target=fn, daemon=True).start()
+
+
 def trigger_pusher(channel, event, payload):
     """
     Publie un evenement Pusher sans bloquer l'ecriture metier si Pusher est
@@ -171,3 +187,111 @@ def can_invite(sender, recipient):
         return False
 
     return True
+
+
+def note_systeme(chat, auteur, texte):
+    """Une ligne de service dans le fil : « X a rejoint », « Discussion démarrée ».
+
+    Elle n'est la parole de personne ; `auteur` n'est là que parce que
+    `Message.sender` est obligatoire.
+    """
+    from .models import Message
+    return Message.objects.create(
+        chat=chat, sender=auteur, message_type=Message.MessageType.SYSTEM, content=texte,
+    )
+
+
+def destinataires_push(message):
+    """Qui reçoit un push pour ce message — la règle produit du 2026-10-29.
+
+    - jamais l'auteur, jamais un fil en sourdine, jamais qui a coupé ses
+      notifications de messagerie ;
+    - tête-à-tête et salons de ``SEUIL_GRAND_SALON`` membres au plus : chacun ;
+    - grands salons, ou membre en « mentions seulement » : seulement la
+      personne à qui l'on RÉPOND, ou que l'on MENTIONNE (« @Prénom »).
+    """
+    from .models import Chat, ChatMembership
+
+    memberships = list(
+        ChatMembership.objects.filter(chat_id=message.chat_id)
+        .exclude(user_id=message.sender_id)
+        .select_related('user', 'user__messaging_preferences')
+    )
+    grand = (
+        message.chat.chat_type == Chat.ChatType.GROUP
+        and len(memberships) + 1 > SEUIL_GRAND_SALON
+    )
+    texte = (message.content or '').lower()
+    repondu = message.reply_to.sender_id if message.reply_to_id and message.reply_to else None
+
+    def vise(user):
+        if user.id == repondu:
+            return True
+        prenom = (user.first_name or '').strip().lower()
+        return bool(prenom) and f'@{prenom}' in texte
+
+    elus = []
+    for m in memberships:
+        if m.is_muted or not m.user.is_active:
+            continue
+        prefs = getattr(m.user, 'messaging_preferences', None)
+        if prefs is not None and not prefs.notifications_enabled:
+            continue
+        mentions_seules = grand or (prefs is not None and prefs.notify_on_mention_only)
+        if mentions_seules and not vise(m.user):
+            continue
+        elus.append(m.user_id)
+    return elus
+
+
+def diffuser_message(message):
+    """Tout ce qu'un nouveau message déclenche hors de son propre fil.
+
+    1. `chat-updated` sur le canal PERSONNEL de chaque membre : la liste des
+       conversations remonte le fil et incrémente sa pastille sans recharger.
+       Jusqu'ici seul le fil OUVERT écoutait ; un message dans un autre salon
+       restait invisible jusqu'au rafraîchissement de la page.
+    2. Le push FCM, selon `destinataires_push`.
+
+    Les destinataires se calculent ICI, dans la requête — la transaction
+    voit le message. Les appels réseau partent ensuite en arrière-plan.
+    """
+    from .models import Chat, ChatMembership
+    from .serializers import apercu_message
+    from .notify import nom_de
+
+    membres = list(
+        ChatMembership.objects.filter(chat_id=message.chat_id).values_list('user_id', flat=True)
+    )
+    pousses = destinataires_push(message)
+
+    auteur = nom_de(message.sender)
+    apercu = apercu_message(message)
+    chat = message.chat
+    if chat.chat_type == Chat.ChatType.DIRECT:
+        titre, corps = auteur, apercu
+    else:
+        titre, corps = (chat.name or 'Salon'), f'{auteur} : {apercu}'
+    corps = corps if len(corps) <= 140 else corps[:139] + '…'
+
+    resume = {
+        'chat_id': message.chat_id,
+        'message_id': message.id,
+        'last_message': {
+            'content': apercu,
+            'message_type': message.message_type,
+            'sent_at': message.sent_at.isoformat(),
+            'sender_name': auteur,
+            'sender_id': message.sender_id,
+        },
+    }
+    donnees = {'url': f'/dashboard/chat/{message.chat_id}', 'chat_id': message.chat_id, 'type': 'chat_message'}
+
+    def _envoyer():
+        canaux = [f'private-user.{uid}' for uid in membres]
+        for i in range(0, len(canaux), PUSHER_CANAUX_PAR_APPEL):
+            trigger_pusher(canaux[i:i + PUSHER_CANAUX_PAR_APPEL], 'chat-updated', resume)
+        for uid in pousses:
+            send_fcm_push(uid, titre, corps, data=donnees)
+
+    lancer_en_arriere_plan(_envoyer)

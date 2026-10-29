@@ -2,52 +2,21 @@ from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 from django.conf import settings
 from .models import Message, MessageReaction, ChatInvitation, Notification
-from .services import trigger_pusher, send_fcm_push
+from .services import diffuser_message, trigger_pusher, send_fcm_push
 
 @receiver(post_save, sender=Message)
 def broadcast_message(sender, instance, created, **kwargs):
     if created:
         if instance.message_type == 'system':
+            # Une note de service s'affiche dans le fil ouvert, mais ne pousse
+            # rien sur les téléphones et ne fait pas remonter la liste.
+            trigger_pusher(f'private-chat.{instance.chat_id}', 'new-message', _charge(instance))
             return
-        sender_obj = instance.sender
-        sender_name = sender_obj.get_full_name() or sender_obj.email or str(sender_obj.id)
-        sender_avatar = None
-        try:
-            if sender_obj.avatar:
-                sender_avatar = sender_obj.avatar.url
-        except Exception:
-            pass
-        if not sender_avatar:
-            sender_avatar = getattr(sender_obj, 'avatar_url', None)
-
-        file_url = None
-        try:
-            if instance.file:
-                file_url = instance.file.url
-        except Exception:
-            pass
-
-        trigger_pusher(
-            f'private-chat.{instance.chat_id}',
-            'new-message',
-            {
-                'id': instance.id,
-                'chat': instance.chat_id,
-                'message_type': instance.message_type,
-                'content': instance.content,
-                'file_url': file_url,
-                'sender': {
-                    'id': instance.sender_id,
-                    'name': sender_name,
-                    'avatar': sender_avatar,
-                    'role': getattr(sender_obj, 'role', None),
-                },
-                'reply_to': instance.reply_to_id,
-                'reactions': [],
-                'is_deleted': False,
-                'sent_at': instance.sent_at.isoformat(),
-            }
-        )
+        # La charge est celle de l'API : citation, nom de fichier, vignette.
+        # Un objet recomposé à la main ici divergeait du `GET` au premier
+        # champ ajouté — le fil temps réel n'aurait jamais montré la citation.
+        trigger_pusher(f'private-chat.{instance.chat_id}', 'new-message', _charge(instance))
+        diffuser_message(instance)
     else:
         if instance.is_deleted:
             trigger_pusher(
@@ -57,6 +26,13 @@ def broadcast_message(sender, instance, created, **kwargs):
                     'message_id': instance.id
                 }
             )
+
+
+def _charge(message):
+    from .serializers import MessageSerializer
+    data = dict(MessageSerializer(message, context={}).data)
+    data['reactions'] = []
+    return data
 
 @receiver(post_save, sender=MessageReaction)
 def broadcast_reaction_add(sender, instance, created, **kwargs):
