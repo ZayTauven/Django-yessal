@@ -7,6 +7,13 @@ class Chat(models.Model):
     class ChatType(models.TextChoices):
         DIRECT = 'direct', _('Direct')
         GROUP = 'group', _('Group')
+        # Un canal de diffusion du Kourel : tout le monde y est abonné, seuls
+        # des auteurs désignés (ou le serveur) y publient, les autres réagissent.
+        CHANNEL = 'channel', _('Canal')
+
+    class ChannelKind(models.TextChoices):
+        GUIDE = 'guide', _('Annonces du guide')
+        JEFS = 'jefs', _('Jëfs du Kourel')
 
     chat_type = models.CharField(
         max_length=10,
@@ -14,6 +21,12 @@ class Chat(models.Model):
         default=ChatType.GROUP
     )
     name = models.CharField(max_length=200, blank=True, null=True)
+    # Canaux seulement : identifiant stable (le code retrouve « jefs » sans
+    # dépendre d'un nom que l'admin peut changer) et présentation.
+    channel_kind = models.CharField(
+        max_length=20, choices=ChannelKind.choices, blank=True, null=True, unique=True,
+    )
+    description = models.CharField(max_length=255, blank=True, default='')
     daara = models.ForeignKey(
         'accounts.Daara',
         on_delete=models.CASCADE,
@@ -61,6 +74,8 @@ class ChatMembership(models.Model):
     joined_at = models.DateTimeField(auto_now_add=True)
     is_muted = models.BooleanField(default=False)
     last_read_at = models.DateTimeField(null=True, blank=True)
+    # Dans un canal : auteur désigné par l'administrateur. Sans effet ailleurs.
+    can_post = models.BooleanField(default=False)
 
     class Meta:
         unique_together = ('chat', 'user')
@@ -73,6 +88,9 @@ class Message(models.Model):
         TEXT = 'text', _('Text')
         FILE = 'file', _('File')
         SYSTEM = 'system', _('System')
+        # Publication composée par le serveur (un Jëf dans son canal) : la
+        # mise en forme vit dans `payload`, `content` n'en garde que le texte.
+        CARD = 'card', _('Carte')
 
     chat = models.ForeignKey(
         Chat,
@@ -107,6 +125,8 @@ class Message(models.Model):
     )
     is_deleted = models.BooleanField(default=False)
     sent_at = models.DateTimeField(auto_now_add=True)
+    edited_at = models.DateTimeField(null=True, blank=True)
+    payload = models.JSONField(null=True, blank=True)
 
     class Meta:
         ordering = ['sent_at']

@@ -34,10 +34,13 @@ class UserBriefSerializer(serializers.ModelSerializer):
     name = serializers.SerializerMethodField()
     avatar = serializers.SerializerMethodField()
     daara_name = serializers.CharField(source='daara.name', read_only=True)
+    # Le titre du membre (AMIR, DIEUWRIGNE…), affiché en étiquette à côté de
+    # son nom dans les fils et les listes de membres.
+    title = serializers.CharField(source='title.name', read_only=True, default=None)
 
     class Meta:
         model = User
-        fields = ['id', 'name', 'avatar', 'daara_name', 'role']
+        fields = ['id', 'name', 'avatar', 'daara_name', 'role', 'title']
 
     def get_name(self, obj):
         name = obj.get_full_name()
@@ -59,6 +62,21 @@ class MessageReactionSerializer(serializers.ModelSerializer):
 
 #: Extensions affichées en vignette dans le fil plutôt qu'en carte de document.
 EXTENSIONS_IMAGE = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
+#: Extensions lues par le lecteur de note vocale.
+EXTENSIONS_AUDIO = {'.mp3', '.m4a', '.aac', '.ogg', '.opus', '.wav', '.amr', '.webm'}
+EXTENSIONS_VIDEO = {'.mp4', '.mov', '.3gp'}
+
+
+def nature_fichier(fichier):
+    """image · audio · video · document — ce que le fil sait afficher."""
+    ext = os.path.splitext(nom_de_fichier(fichier))[1].lower()
+    if ext in EXTENSIONS_IMAGE:
+        return 'image'
+    if ext in EXTENSIONS_AUDIO:
+        return 'audio'
+    if ext in EXTENSIONS_VIDEO:
+        return 'video'
+    return 'document'
 
 
 def apercu_message(message):
@@ -73,8 +91,15 @@ def apercu_message(message):
     if message.is_deleted:
         return 'Message supprimé'
     if message.message_type == Message.MessageType.FILE:
+        nature = nature_fichier(message.file)
+        if nature == 'audio':
+            return 'Note vocale'
+        if nature == 'image':
+            return message.content or 'Photo'
+        if nature == 'video':
+            return message.content or 'Vidéo'
         nom = nom_de_fichier(message.file)
-        return f'Pièce jointe : {nom}' if nom else 'Pièce jointe'
+        return f'Document : {nom}' if nom else 'Pièce jointe'
     return message.content or ''
 
 
@@ -114,6 +139,7 @@ class MessageSerializer(serializers.ModelSerializer):
     file_name = serializers.SerializerMethodField()
     file_size = serializers.SerializerMethodField()
     file_is_image = serializers.SerializerMethodField()
+    file_kind = serializers.SerializerMethodField()
     reply_preview = ReplyPreviewSerializer(source='reply_to', read_only=True)
     # Vide autorisé : une pièce jointe peut partir sans légende. La règle
     # « un texte ou un fichier » est posée par `validate`.
@@ -123,10 +149,11 @@ class MessageSerializer(serializers.ModelSerializer):
         model = Message
         fields = [
             'id', 'chat', 'sender', 'message_type', 'content',
-            'file', 'file_url', 'file_name', 'file_size', 'file_is_image',
+            'file', 'file_url', 'file_name', 'file_size', 'file_is_image', 'file_kind',
             'reply_to', 'reply_preview', 'reactions', 'is_deleted', 'sent_at',
+            'edited_at', 'payload',
         ]
-        read_only_fields = ['sender', 'sent_at']
+        read_only_fields = ['sender', 'sent_at', 'edited_at', 'payload']
         extra_kwargs = {'file': {'write_only': True}}
 
     def validate(self, attrs):
@@ -167,6 +194,9 @@ class MessageSerializer(serializers.ModelSerializer):
     def get_file_is_image(self, obj):
         return os.path.splitext(nom_de_fichier(obj.file))[1].lower() in EXTENSIONS_IMAGE
 
+    def get_file_kind(self, obj):
+        return nature_fichier(obj.file) if obj.file else None
+
     def get_reactions(self, obj):
         # Regrouper les réactions par emoji
         user = self.context.get('request').user if self.context.get('request') else None
@@ -197,6 +227,7 @@ class ChatSerializer(serializers.ModelSerializer):
     peer_id = serializers.SerializerMethodField()
     last_activity_at = serializers.SerializerMethodField()
     created_by = serializers.PrimaryKeyRelatedField(read_only=True)
+    can_post = serializers.SerializerMethodField()
 
     class Meta:
         model = Chat
@@ -204,8 +235,15 @@ class ChatSerializer(serializers.ModelSerializer):
             'id', 'chat_type', 'display_name', 'avatar', 'last_message',
             'unread_count', 'members_count', 'is_muted', 'peer_id',
             'peer_last_read_at', 'last_activity_at', 'daara', 'campaign',
-            'created_by', 'created_at',
+            'created_by', 'created_at', 'channel_kind', 'description', 'can_post',
         ]
+
+    def get_can_post(self, obj):
+        """Peut-on écrire ici ? Partout oui, sauf dans un canal sans être auteur."""
+        if obj.chat_type != Chat.ChatType.CHANNEL:
+            return True
+        membership = self._my_membership(obj)
+        return bool(membership and membership.can_post)
 
     def _my_membership(self, obj):
         request = self.context.get('request')
@@ -415,7 +453,7 @@ class CreateGroupChatSerializer(serializers.ModelSerializer):
             member_ids.update(scoped_users.filter(role=User.Role.CHEF_DAARA).values_list('id', flat=True))
         elif invite_mode == 'global_collectors':
             member_ids.update(scoped_users.filter(role=User.Role.COLLECTOR).values_list('id', flat=True))
-        
+
         # Le créateur est toujours membre
         if request and request.user:
             ChatMembership.objects.create(chat=chat, user=request.user, added_by=request.user)

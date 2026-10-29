@@ -111,6 +111,11 @@ class Donation(models.Model):
     )
     amount = models.DecimalField(max_digits=15, decimal_places=2)
     is_anonymous = models.BooleanField(default=False)
+    # Consentement EXPLICITE à voir son nom dans le canal « Les Jëfs du
+    # Kourel ». Distinct d'`is_anonymous` (classements internes, `False` par
+    # défaut) : réutiliser celui-là aurait publié le nom de tous les donateurs
+    # passés, qui n'avaient rien accepté de tel. Jamais de montant, dans aucun cas.
+    public_in_channel = models.BooleanField(default=False)
     payment_method = models.CharField(max_length=20, choices=PaymentMethod.choices, default=PaymentMethod.MANUAL)
     payment_status = models.CharField(max_length=20, choices=PaymentStatus.choices, default=PaymentStatus.PENDING)
     wire_reference = models.CharField(max_length=100, blank=True, help_text='Référence de virement saisie par le membre')

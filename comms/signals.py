@@ -7,7 +7,7 @@ from .services import diffuser_message, trigger_pusher, send_fcm_push
 @receiver(post_save, sender=Message)
 def broadcast_message(sender, instance, created, **kwargs):
     if created:
-        if instance.message_type == 'system':
+        if instance.message_type == Message.MessageType.SYSTEM:
             # Une note de service s'affiche dans le fil ouvert, mais ne pousse
             # rien sur les téléphones et ne fait pas remonter la liste.
             trigger_pusher(f'private-chat.{instance.chat_id}', 'new-message', _charge(instance))
@@ -26,6 +26,8 @@ def broadcast_message(sender, instance, created, **kwargs):
                     'message_id': instance.id
                 }
             )
+        elif instance.edited_at:
+            trigger_pusher(f'private-chat.{instance.chat_id}', 'message-edited', _charge(instance))
 
 
 def _charge(message):
@@ -96,4 +98,7 @@ def push_notification_to_fcm(sender, instance, created, **kwargs):
 def create_messaging_preferences(sender, instance, created, **kwargs):
     if created:
         from .models import UserMessagingPreferences
+        from .canaux import abonner
         UserMessagingPreferences.objects.get_or_create(user=instance)
+        # Les canaux du Kourel sont ouverts à tous, d'office.
+        abonner(instance)

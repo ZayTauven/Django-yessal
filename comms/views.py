@@ -52,8 +52,12 @@ def pusher_auth(request):
     if not channel_name or not socket_id:
         return Response({'detail': 'Paramètres channel_name et socket_id requis.'}, status=status.HTTP_400_BAD_REQUEST)
 
+    # 0. Le canal commun du Kourel : tout membre connecté l'écoute.
+    if channel_name == 'private-kourel':
+        pass
+
     # 1. Canal privé de l'utilisateur
-    if channel_name.startswith('private-user.'):
+    elif channel_name.startswith('private-user.'):
         user_id = channel_name.split('.')[-1]
         if str(request.user.id) != user_id:
             raise PermissionDenied("Vous n'êtes pas autorisé à écouter ce canal.")
@@ -109,7 +113,7 @@ class ChatViewSet(viewsets.ModelViewSet):
         default_last_read = Value(datetime(1970, 1, 1, tzinfo=dt_timezone.utc))
 
         last_message_qs = Message.objects.filter(chat_id=OuterRef('pk')).order_by('-sent_at')
-        memberships_qs = ChatMembership.objects.select_related('user', 'user__daara')
+        memberships_qs = ChatMembership.objects.select_related('user', 'user__daara', 'user__title')
 
         return (
             Chat.objects.filter(id__in=chat_ids)
@@ -194,6 +198,8 @@ class ChatViewSet(viewsets.ModelViewSet):
         chat = self.get_object()
         if chat.chat_type == Chat.ChatType.DIRECT:
             raise ValidationError("Une discussion directe ne se quitte pas ; mettez-la en sourdine.")
+        if chat.chat_type == Chat.ChatType.CHANNEL:
+            raise ValidationError("Un canal du Kourel ne se quitte pas ; mettez-le en sourdine.")
         deleted, _ = ChatMembership.objects.filter(chat=chat, user=request.user).delete()
         if deleted:
             note_systeme(chat, request.user, f"{nom_de(request.user)} a quitté le salon.")
@@ -208,8 +214,8 @@ class ChatViewSet(viewsets.ModelViewSet):
         Daara — et le créateur du salon.
         """
         chat = self.get_object()
-        if chat.chat_type == Chat.ChatType.DIRECT:
-            raise ValidationError("On n'ajoute personne à une discussion directe.")
+        if chat.chat_type != Chat.ChatType.GROUP:
+            raise ValidationError("On n'ajoute des membres qu'à un salon.")
         role = request.user.role
         if role not in (User.Role.ADMIN, User.Role.CHEF_DAARA) and chat.created_by_id != request.user.id:
             raise PermissionDenied(
@@ -236,9 +242,27 @@ class ChatViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'], url_path='members')
     def list_members(self, request, pk=None):
         chat = self.get_object()
-        memberships = chat.memberships.select_related('user', 'user__daara')
+        memberships = chat.memberships.select_related('user', 'user__daara', 'user__title')
+        if chat.chat_type == Chat.ChatType.CHANNEL:
+            # Tout le Kourel : on ne renvoie que les auteurs, pas des milliers de lignes.
+            memberships = memberships.filter(can_post=True)
         members = [m.user for m in memberships]
         return Response(UserBriefSerializer(members, many=True, context={'request': request}).data)
+
+    @action(detail=True, methods=['post'], url_path='authors')
+    def set_author(self, request, pk=None):
+        """Désigner (ou retirer) un auteur d'un canal. Administrateurs seulement."""
+        if request.user.role != User.Role.ADMIN:
+            raise PermissionDenied("Seul un administrateur désigne les auteurs d'un canal.")
+        chat = self.get_object()
+        if chat.chat_type != Chat.ChatType.CHANNEL or chat.channel_kind == Chat.ChannelKind.JEFS:
+            raise ValidationError("Ce fil n'accepte pas d'auteurs désignés.")
+        user_id = request.data.get('user_id')
+        can_post = bool(request.data.get('can_post', True))
+        membership, _ = ChatMembership.objects.get_or_create(chat=chat, user_id=user_id)
+        membership.can_post = can_post
+        membership.save(update_fields=['can_post'])
+        return Response({'user_id': membership.user_id, 'can_post': membership.can_post})
 
 
 class MessageViewSet(viewsets.ModelViewSet):
@@ -256,13 +280,42 @@ class MessageViewSet(viewsets.ModelViewSet):
             # `UserBriefSerializer` lit `daara.name`, `MessageSerializer` les
             # réactions et la citation : sans ces jointures, une requête par
             # message et par champ.
-            .select_related('sender', 'sender__daara', 'reply_to', 'reply_to__sender')
+            .select_related('sender', 'sender__daara', 'sender__title', 'reply_to', 'reply_to__sender')
             .prefetch_related('reactions')
         )
         chat_id = self.request.query_params.get('chat')
         if chat_id:
             qs = qs.filter(chat_id=chat_id)
+        # Recherche dans une conversation — sur le texte des messages encore visibles.
+        q = (self.request.query_params.get('q') or '').strip()
+        if q:
+            qs = qs.filter(content__icontains=q, is_deleted=False).exclude(
+                message_type=Message.MessageType.SYSTEM
+            )
         return qs.order_by('sent_at')
+
+    def update(self, request, *args, **kwargs):
+        """Modifier son propre message texte. Rien d'autre ne se modifie.
+
+        Un `ModelViewSet` accepte PUT et PATCH d'office : jusqu'ici, tout membre
+        d'un fil pouvait réécrire le message d'un autre. Seul le texte de
+        l'auteur, d'un message ni supprimé ni système, se corrige désormais.
+        """
+        message = self.get_object()
+        if message.sender_id != request.user.id:
+            raise PermissionDenied("Vous ne pouvez modifier que vos propres messages.")
+        if message.is_deleted or message.message_type != Message.MessageType.TEXT:
+            raise ValidationError("Ce message ne peut pas être modifié.")
+        texte = (request.data.get('content') or '').strip()
+        if not texte:
+            raise ValidationError({'content': 'Le message est vide.'})
+        message.content = texte
+        message.edited_at = timezone.now()
+        message.save(update_fields=['content', 'edited_at'])
+        return Response(self.get_serializer(message).data)
+
+    def partial_update(self, request, *args, **kwargs):
+        return self.update(request, *args, **kwargs)
 
     def list(self, request, *args, **kwargs):
         """Le fil, entier — ou par pages en remontant, si `limit` est donné.
@@ -301,8 +354,14 @@ class MessageViewSet(viewsets.ModelViewSet):
             raise ValidationError("Le champ chat est requis.")
 
         # Vérifier l'appartenance au chat
-        if not ChatMembership.objects.filter(chat=chat, user=self.request.user).exists():
+        membership = ChatMembership.objects.filter(chat=chat, user=self.request.user).first()
+        if not membership:
             raise PermissionDenied("Vous n'êtes pas membre de cette discussion.")
+        if chat.chat_type == Chat.ChatType.CHANNEL:
+            if not membership.can_post:
+                raise PermissionDenied("Dans ce canal, on réagit ; seuls les auteurs désignés publient.")
+            if serializer.validated_data.get('reply_to'):
+                raise ValidationError({'reply_to': "On ne répond pas dans un canal."})
 
         # Vérifier si partage de fichier est autorisé
         config = get_effective_config(self.request.user)

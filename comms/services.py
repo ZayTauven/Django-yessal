@@ -40,6 +40,10 @@ pusher_client = (
 #: avec lui, le message qui comptait vraiment.
 SEUIL_GRAND_SALON = 50
 
+#: Le canal Pusher que tout membre connecté écoute : les nouvelles des canaux
+#: du Kourel y passent une fois pour tous.
+CANAL_COMMUN = 'private-kourel'
+
 #: Pusher accepte au plus 100 canaux par appel.
 PUSHER_CANAUX_PAR_APPEL = 100
 
@@ -212,12 +216,20 @@ def destinataires_push(message):
     """
     from .models import Chat, ChatMembership
 
+    chat = message.chat
+    if chat.chat_type == Chat.ChatType.CHANNEL and chat.channel_kind != Chat.ChannelKind.GUIDE:
+        # « Les Jëfs du Kourel » ne sonne jamais : un Jëf par minute le jour
+        # d'un Magal ferait vibrer chaque téléphone sans relâche.
+        return []
+
     memberships = list(
         ChatMembership.objects.filter(chat_id=message.chat_id)
         .exclude(user_id=message.sender_id)
         .select_related('user', 'user__messaging_preferences')
     )
-    grand = (
+    # Une annonce du guide atteint tout le monde, quel que soit l'effectif.
+    canal_du_guide = chat.chat_type == Chat.ChatType.CHANNEL
+    grand = not canal_du_guide and (
         message.chat.chat_type == Chat.ChatType.GROUP
         and len(memberships) + 1 > SEUIL_GRAND_SALON
     )
@@ -237,7 +249,9 @@ def destinataires_push(message):
         prefs = getattr(m.user, 'messaging_preferences', None)
         if prefs is not None and not prefs.notifications_enabled:
             continue
-        mentions_seules = grand or (prefs is not None and prefs.notify_on_mention_only)
+        mentions_seules = grand or (
+            not canal_du_guide and prefs is not None and prefs.notify_on_mention_only
+        )
         if mentions_seules and not vise(m.user):
             continue
         elus.append(m.user_id)
@@ -260,14 +274,17 @@ def diffuser_message(message):
     from .serializers import apercu_message
     from .notify import nom_de
 
-    membres = list(
+    chat = message.chat
+    est_canal = chat.chat_type == Chat.ChatType.CHANNEL
+    # Un canal compte tout le Kourel : un seul événement sur le canal commun
+    # plutôt que des milliers de canaux personnels.
+    membres = [] if est_canal else list(
         ChatMembership.objects.filter(chat_id=message.chat_id).values_list('user_id', flat=True)
     )
     pousses = destinataires_push(message)
 
     auteur = nom_de(message.sender)
     apercu = apercu_message(message)
-    chat = message.chat
     if chat.chat_type == Chat.ChatType.DIRECT:
         titre, corps = auteur, apercu
     else:
@@ -288,6 +305,8 @@ def diffuser_message(message):
     donnees = {'url': f'/dashboard/chat/{message.chat_id}', 'chat_id': message.chat_id, 'type': 'chat_message'}
 
     def _envoyer():
+        if est_canal:
+            trigger_pusher(CANAL_COMMUN, 'chat-updated', resume)
         canaux = [f'private-user.{uid}' for uid in membres]
         for i in range(0, len(canaux), PUSHER_CANAUX_PAR_APPEL):
             trigger_pusher(canaux[i:i + PUSHER_CANAUX_PAR_APPEL], 'chat-updated', resume)

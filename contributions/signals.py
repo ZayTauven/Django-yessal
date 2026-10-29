@@ -7,6 +7,20 @@ from comms.notify import notify_many, nom_de
 User = get_user_model()
 
 @receiver(post_save, sender=Donation)
+def publier_dans_le_canal(sender, instance, **kwargs):
+    """Un Jëf confirmé apparaît dans « Les Jëfs du Kourel ».
+
+    Après validation de la transaction : un paiement annulé par un rollback
+    ne doit pas laisser de carte derrière lui. `publier_jef` est idempotent —
+    un Jëf re-sauvegardé ne publie pas deux fois.
+    """
+    if instance.payment_status == Donation.PaymentStatus.CONFIRMED:
+        from django.db import transaction
+        from comms.canaux import publier_jef
+        transaction.on_commit(lambda: publier_jef(instance))
+
+
+@receiver(post_save, sender=Donation)
 def notify_for_collector_payment(sender, instance, created, **kwargs):
     # Une DEMANDE de collecte seulement. Le signal partait aussi pour des
     # espèces déjà dans la main du collecteur, et annonçait « Collecte
@@ -19,7 +33,7 @@ def notify_for_collector_payment(sender, instance, created, **kwargs):
         donor = instance.donor
         campaign = instance.campaign
         daara = donor.daara
-        
+
         from .services.collecte import collecteurs_de_zone, zone_de
 
         # Les collecteurs de la ZONE du membre, plus le coordinateur de son
@@ -34,7 +48,7 @@ def notify_for_collector_payment(sender, instance, created, **kwargs):
             recipients.update(User.objects.filter(role='chef_daara', daara=daara))
         if not de_zone:
             recipients.update(User.objects.filter(role='admin', is_active=True))
-        
+
         from .views import montant_lisible
 
         membre = nom_de(donor)
