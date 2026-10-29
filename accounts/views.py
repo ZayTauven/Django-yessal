@@ -40,6 +40,8 @@ from .serializers import (
 )
 from .services.title_service import approve_title_request, refuse_title_request
 from .services.ldd_import import ModeImport, importer as importer_classeur
+from .services.accueil import ROLES_COMMUNAUTAIRES
+from .services.user_import import importer as importer_membres
 
 from events.models import Campaign
 from contributions.models import Donation
@@ -1366,6 +1368,93 @@ class UserManagementViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(status=User.Status.ACTIVE)
+
+    @action(detail=False, methods=['post'], url_path='import-excel')
+    def import_excel(self, request):
+        """Crée les comptes d'un classeur. `apercu=true` montre sans rien écrire.
+
+        Voir `services.user_import` : un Daara n'est affecté que si le fichier
+        le désigne sans ambiguïté ; sinon le compte naît sans Daara, et le
+        membre le choisit à sa première connexion.
+        """
+        fichier = request.FILES.get('file')
+        if fichier is None:
+            return Response({'detail': 'Aucun fichier fourni.'}, status=status.HTTP_400_BAD_REQUEST)
+        if fichier.size > 5 * 1024 * 1024:
+            return Response({'detail': 'Fichier trop lourd : 5 Mo au plus.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        apercu = str(request.data.get('apercu', '')).lower() in ('1', 'true', 'oui')
+        try:
+            rapport = importer_membres(fichier, request=request, apercu=apercu)
+        except Exception:
+            logger.exception("Import des membres : échec inattendu")
+            return Response(
+                {'detail': "L'import a échoué. L'incident a été enregistré."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        charge = rapport.en_dict()
+        return Response(charge, status=status.HTTP_200_OK if charge['success'] else status.HTTP_400_BAD_REQUEST)
+
+
+class ProfileDaaraView(APIView):
+    """Le membre choisit son Daara, UNE fois : quand son compte n'en a pas.
+
+    C'est l'étape « daara » de l'accueil (`services.accueil`) — le cas d'un
+    compte importé dont le fichier ne désignait pas de Daara sûr. Le choix est
+    libre, comme à l'inscription publique ; le coordinateur du Daara en est
+    prévenu, et un Daara déjà renseigné ne se change que par un administrateur.
+    Sans cette borne, n'importe quel membre pourrait passer d'un Daara à
+    l'autre au gré des annuaires et des Ndiguels ciblés.
+    """
+
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def post(self, request):
+        user = request.user
+        if user.role not in ROLES_COMMUNAUTAIRES:
+            return Response(
+                {'detail': "Ce type de compte n'est rattaché à aucun Daara."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if user.daara_id:
+            return Response(
+                {'detail': "Votre Daara est déjà renseigné. Seul un administrateur peut le changer."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        daara = (
+            Daara.objects.select_related('ldd', 'chef')
+            .filter(pk=request.data.get('daara_id'), is_active=True)
+            .first()
+            if str(request.data.get('daara_id', '')).isdigit() else None
+        )
+        if daara is None:
+            return Response({'daara_id': ['Choisissez un Daara de la liste.']}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.daara = daara
+        user.save(update_fields=['daara'])
+        # Un collecteur sans zone ne verrait aucune demande de collecte : la
+        # LDD de son Daara y entre d'office, comme à la nomination.
+        if user.role == User.Role.COLLECTOR and not user.collecte_zones.exists():
+            user.collecte_zones.add(daara.ldd_id)
+
+        coordinateurs = {daara.chef} if daara.chef else set(
+            User.objects.filter(daara=daara, role=User.Role.CHEF_DAARA, status=User.Status.ACTIVE)
+        )
+        nom = nom_de(user)
+        for coordinateur in coordinateurs - {user}:
+            # Pas de courriel : un rattachement n'appelle aucune action, la
+            # notification suffit à ce que le coordinateur connaisse les siens.
+            notify(
+                coordinateur,
+                code='membre_rattache',
+                titre='Nouveau membre dans votre Daara',
+                message=f'{nom} a rejoint le Daara {daara.name}.',
+                courriel=False,
+            )
+
+        return Response(UserSerializer(user, context={'request': request}).data)
 
 
 class ForgotPasswordView(generics.GenericAPIView):

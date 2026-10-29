@@ -6,6 +6,7 @@ from .views import (
     RegisterView,
     CustomTokenObtainPairView,
     ProfileView,
+    ProfileDaaraView,
     LDDViewSet,
     DaaraViewSet,
     TutelleViewSet,
@@ -67,6 +68,8 @@ urlpatterns = [
     path('auth/reset-password/', ResetPasswordConfirmView.as_view(), name='reset_password'),
     path('auth/change-password/', ChangePasswordView.as_view(), name='change_password'),
     path('profile/', ProfileView.as_view(), name='profile'),
+    # L'étape « daara » de l'accueil : une seule fois, compte sans Daara.
+    path('profile/daara/', ProfileDaaraView.as_view(), name='profile-daara'),
 
     path('users/<int:user_id>/documents/', user_documents, name='user-documents'),
     path('users/<int:user_id>/documents/<int:pk>/', user_document_detail, name='user-document-detail'),

@@ -16,6 +16,7 @@ from .models import (
     UserDocument,
 )
 from .authentication import TOKEN_VERSION_CLAIM
+from .services.accueil import etapes_accueil
 
 from core.mail import send_to_user
 from core.phone import looks_like_phone, normalize_phone, normalize_phone_quietly
@@ -386,6 +387,9 @@ class UserSerializer(serializers.ModelSerializer):
         allow_null=True,
     )
     title_name = serializers.CharField(source='title.name', read_only=True, allow_null=True)
+    # Les étapes d'accueil restantes — vide une fois le compte en ordre. Voir
+    # `services.accueil` : c'est la seule copie de la règle.
+    onboarding = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -401,10 +405,14 @@ class UserSerializer(serializers.ModelSerializer):
             'marital_status', 'blood_type',
             'date_joined',
             'must_change_password',
+            'onboarding',
         ]
         # En lecture seule : c'est le changement de mot de passe qui l'éteint,
         # pas une mise à jour de profil.
         read_only_fields = ['must_change_password']
+
+    def get_onboarding(self, obj):
+        return etapes_accueil(obj)
 
     def get_is_admin(self, obj):
         return obj.role == User.Role.ADMIN or obj.is_staff
@@ -441,9 +449,13 @@ class UserSerializer(serializers.ModelSerializer):
             # dicté de vive voix. L'écrire le rendrait indéfiniment lisible par
             # quiconque accède à la boîte. Le message dit seulement qu'un mot de
             # passe provisoire a été posé, et qu'il faudra en choisir un autre.
-            send_to_user(user, 'mot_de_passe_provisoire', {
-                'auteur': _auteur_de(self),
-            })
+            #
+            # `courriel_differe` : l'import Excel envoie tous ses messages d'un
+            # coup, après sa transaction (`services.user_import`).
+            if not self.context.get('courriel_differe'):
+                send_to_user(user, 'mot_de_passe_provisoire', {
+                    'auteur': _auteur_de(self),
+                })
         return user
 
     def update(self, instance, validated_data):
