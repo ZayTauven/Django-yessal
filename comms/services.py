@@ -4,6 +4,11 @@ from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
+#: Le canal de notification Android créé par l'application mobile — à garder
+#: identique à `setNotificationChannelAsync("default", …)` dans
+#: `yessal-mobile/lib/push.service.ts` et à `defaultChannel` dans `app.json`.
+ANDROID_CHANNEL_ID = 'default'
+
 try:
     import pusher
 except ImportError:
@@ -68,6 +73,14 @@ def send_fcm_push(user_id: int, title: str, body: str, data: dict | None = None)
         multicast = messaging.MulticastMessage(
             notification=messaging.Notification(title=title, body=body),
             data={k: str(v) for k, v in (data or {}).items()},
+            # Le canal « Yessal Gui » que l'application crée au démarrage
+            # (`lib/push.service.ts`). Sans lui, expo-notifications range le
+            # push dans son canal de repli, et c'est ce nom-là que le membre
+            # voit dans les réglages de son téléphone (constaté le 2026-10-29).
+            # Ignoré pour les jetons web.
+            android=messaging.AndroidConfig(
+                notification=messaging.AndroidNotification(channel_id=ANDROID_CHANNEL_ID),
+            ),
             tokens=tokens,
         )
         batch_response = messaging.send_each_for_multicast(multicast)
