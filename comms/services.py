@@ -1,8 +1,27 @@
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from django.conf import settings
+from django.db import close_old_connections, transaction
 
 logger = logging.getLogger(__name__)
+
+#: Les envois vers Pusher et Firebase partent d'ici, hors de la requête.
+#:
+#: Mesuré le 2026-10-29 : envoyer un message prenait 382 ms (jusqu'à 3 s),
+#: réagir 303 ms — contre 40 et 27 ms sans les appels Pusher, qui étaient
+#: faits PENDANT la requête. L'expéditeur attendait l'aller-retour vers les
+#: serveurs de Pusher avant de voir son message parti.
+#:
+#: Une petite réserve de fils plutôt qu'un fil par événement : un salon actif
+#: le jour d'un Magal en créait des centaines.
+_FILE_ENVOIS = ThreadPoolExecutor(max_workers=4, thread_name_prefix='yessal-temps-reel')
+
+#: Firebase ne s'initialise qu'une fois par processus — et deux pushes
+#: simultanés le tentaient tous les deux : « The default Firebase app already
+#: exists », et le second push était perdu (constaté le 2026-10-29).
+_VERROU_FIREBASE = threading.Lock()
 
 #: Le canal de notification Android créé par l'application mobile — à garder
 #: identique à `setNotificationChannelAsync("default", …)` dans
@@ -50,8 +69,28 @@ PUSHER_CANAUX_PAR_APPEL = 100
 
 def lancer_en_arriere_plan(fn):
     """Exécute `fn` hors de la requête. Point unique, que les tests remplacent."""
-    import threading
-    threading.Thread(target=fn, daemon=True).start()
+    def _tache():
+        # Un fil de la réserve garde sa connexion d'un envoi à l'autre : on
+        # la renouvelle si elle a vieilli, comme le fait Django entre deux
+        # requêtes.
+        close_old_connections()
+        try:
+            fn()
+        except Exception:
+            logger.exception("Envoi temps réel en échec")
+        finally:
+            close_old_connections()
+
+    _FILE_ENVOIS.submit(_tache)
+
+
+def publier(channel, event, payload):
+    """Un événement Pusher, envoyé APRÈS validation de la transaction.
+
+    Après : un client qui reçoit l'événement et recharge aussitôt le fil doit
+    trouver le message en base. Hors requête : l'expéditeur n'attend pas.
+    """
+    transaction.on_commit(lambda: lancer_en_arriere_plan(lambda: trigger_pusher(channel, event, payload)))
 
 
 def trigger_pusher(channel, event, payload):
@@ -63,7 +102,12 @@ def trigger_pusher(channel, event, payload):
         return False
     try:
         pusher_client.trigger(channel, event, payload)
-    except Exception:
+    except Exception as exc:
+        # Ne jamais faire échouer l'envoi d'un message — mais ne plus se taire :
+        # le 2026-10-30, l'app Pusher de développement avait disparu et AUCUN
+        # événement ne partait, sans une ligne dans les journaux. Le temps réel
+        # semblait marcher, seulement parce que l'écran se rechargeait au focus.
+        logger.warning("Pusher refuse l'événement %s sur %s : %s", event, channel, exc)
         return False
     return True
 
@@ -78,12 +122,13 @@ def send_fcm_push(user_id: int, title: str, body: str, data: dict | None = None)
         import firebase_admin
         from firebase_admin import credentials, messaging
 
-        if not firebase_admin._apps:
-            cred_path = getattr(settings, 'FIREBASE_CREDENTIALS_PATH', None)
-            if not cred_path:
-                return
-            cred = credentials.Certificate(str(cred_path))
-            firebase_admin.initialize_app(cred)
+        with _VERROU_FIREBASE:
+            if not firebase_admin._apps:
+                cred_path = getattr(settings, 'FIREBASE_CREDENTIALS_PATH', None)
+                if not cred_path:
+                    return
+                cred = credentials.Certificate(str(cred_path))
+                firebase_admin.initialize_app(cred)
 
         from .models import FCMToken
         tokens = list(FCMToken.objects.filter(user_id=user_id).values_list('token', flat=True))
@@ -313,4 +358,4 @@ def diffuser_message(message):
         for uid in pousses:
             send_fcm_push(uid, titre, corps, data=donnees)
 
-    lancer_en_arriere_plan(_envoyer)
+    transaction.on_commit(lambda: lancer_en_arriere_plan(_envoyer))

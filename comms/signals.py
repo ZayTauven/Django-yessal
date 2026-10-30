@@ -2,7 +2,7 @@ from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 from django.conf import settings
 from .models import Message, MessageReaction, ChatInvitation, Notification
-from .services import diffuser_message, trigger_pusher, send_fcm_push
+from .services import diffuser_message, publier, send_fcm_push
 
 @receiver(post_save, sender=Message)
 def broadcast_message(sender, instance, created, **kwargs):
@@ -10,16 +10,16 @@ def broadcast_message(sender, instance, created, **kwargs):
         if instance.message_type == Message.MessageType.SYSTEM:
             # Une note de service s'affiche dans le fil ouvert, mais ne pousse
             # rien sur les téléphones et ne fait pas remonter la liste.
-            trigger_pusher(f'private-chat.{instance.chat_id}', 'new-message', _charge(instance))
+            publier(f'private-chat.{instance.chat_id}', 'new-message', _charge(instance))
             return
         # La charge est celle de l'API : citation, nom de fichier, vignette.
         # Un objet recomposé à la main ici divergeait du `GET` au premier
         # champ ajouté — le fil temps réel n'aurait jamais montré la citation.
-        trigger_pusher(f'private-chat.{instance.chat_id}', 'new-message', _charge(instance))
+        publier(f'private-chat.{instance.chat_id}', 'new-message', _charge(instance))
         diffuser_message(instance)
     else:
         if instance.is_deleted:
-            trigger_pusher(
+            publier(
                 f'private-chat.{instance.chat_id}',
                 'message-deleted',
                 {
@@ -27,39 +27,61 @@ def broadcast_message(sender, instance, created, **kwargs):
                 }
             )
         elif instance.edited_at:
-            trigger_pusher(f'private-chat.{instance.chat_id}', 'message-edited', _charge(instance))
+            publier(f'private-chat.{instance.chat_id}', 'message-edited', _charge(instance))
 
 
 def _charge(message):
     from .serializers import MessageSerializer
     data = dict(MessageSerializer(message, context={}).data)
     data['reactions'] = []
+    # L'identifiant que l'expéditeur a donné à sa bulle « en cours » : il la
+    # remplace par celle-ci sans deviner (deux photos sans légende envoyées
+    # d'affilée avaient le même contenu vide, et se confondaient).
+    data['client_id'] = getattr(message, '_client_id', None)
     return data
+
+
+def _reactions(message_id):
+    """L'état COMPLET des réactions d'un message, avec qui a réagi.
+
+    Le client remplaçait des compteurs par +1/−1 : un événement perdu ou reçu
+    deux fois faussait le compte pour de bon, et ses propres réactions faites
+    depuis le téléphone n'apparaissaient pas sur l'ordinateur. Avec l'état
+    entier, chaque appareil se recale au premier événement.
+    """
+    agregat = {}
+    for emoji, user_id in MessageReaction.objects.filter(message_id=message_id).values_list('emoji', 'user_id'):
+        entree = agregat.setdefault(emoji, {'emoji': emoji, 'count': 0, 'user_ids': []})
+        entree['count'] += 1
+        entree['user_ids'].append(user_id)
+    return list(agregat.values())
 
 @receiver(post_save, sender=MessageReaction)
 def broadcast_reaction_add(sender, instance, created, **kwargs):
     if created:
-        trigger_pusher(
+        publier(
             f'private-chat.{instance.message.chat_id}',
             'message-reaction',
             {
                 'message_id': instance.message_id,
                 'emoji': instance.emoji,
                 'user_id': instance.user_id,
-                'action': 'add'
+                'action': 'add',
+                'reactions': _reactions(instance.message_id),
             }
         )
 
 @receiver(post_delete, sender=MessageReaction)
 def broadcast_reaction_remove(sender, instance, **kwargs):
-    trigger_pusher(
+    publier(
         f'private-chat.{instance.message.chat_id}',
         'message-reaction',
         {
             'message_id': instance.message_id,
             'emoji': instance.emoji,
             'user_id': instance.user_id,
-            'action': 'remove'
+            'action': 'remove',
+            'reactions': _reactions(instance.message_id),
         }
     )
 
@@ -72,7 +94,7 @@ def broadcast_invitation(sender, instance, created, **kwargs):
         elif hasattr(instance.sender, 'avatar_url') and instance.sender.avatar_url:
             sender_avatar = instance.sender.avatar_url
 
-        trigger_pusher(
+        publier(
             f'private-user.{instance.recipient_id}',
             'new-invitation',
             {

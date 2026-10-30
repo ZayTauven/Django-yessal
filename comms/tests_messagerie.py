@@ -33,7 +33,6 @@ class SansReseau(APITestCase):
 
     def setUp(self):
         self.pusher = mock.patch('comms.services.trigger_pusher').start()
-        self.signal_pusher = mock.patch('comms.signals.trigger_pusher').start()
         self.fcm = mock.patch('comms.services.send_fcm_push').start()
         # L'arrière-plan s'exécute sur place : les assertions voient le résultat.
         mock.patch('comms.services.lancer_en_arriere_plan', side_effect=lambda fn: fn()).start()
@@ -146,7 +145,9 @@ class PushTests(SansReseau):
         self.fatou = creer('fatou@ex.org', first_name='Fatou')
 
     def ecrire(self, chat, auteur, texte, reply_to=None):
-        return Message.objects.create(chat=chat, sender=auteur, content=texte, reply_to=reply_to)
+        # Les envois partent après validation de la transaction (`publier`).
+        with self.captureOnCommitCallbacks(execute=True):
+            return Message.objects.create(chat=chat, sender=auteur, content=texte, reply_to=reply_to)
 
     def test_tete_a_tete_pousse_vers_l_autre_seulement(self):
         chat = salon(self.awa, self.modou, chat_type=Chat.ChatType.DIRECT)
@@ -216,3 +217,57 @@ class SalonTests(SansReseau):
         rows = self.client.get('/api/comms/').json()
         rows = rows['results'] if isinstance(rows, dict) else rows
         self.assertTrue(rows[0]['is_muted'])
+
+
+class TempsReelTests(SansReseau):
+    """Ce que les événements Pusher portent, et quand ils partent."""
+
+    def setUp(self):
+        super().setUp()
+        self.awa = creer('awa@ex.org', first_name='Awa')
+        self.modou = creer('modou@ex.org', first_name='Modou')
+        self.chat = salon(self.awa, self.modou)
+        self.client.force_authenticate(self.modou)
+
+    def evenements(self, nom):
+        return [c.args for c in self.pusher.call_args_list if c.args[1] == nom]
+
+    def test_rien_ne_part_avant_la_validation_de_la_transaction(self):
+        with self.captureOnCommitCallbacks(execute=False) as rappels:
+            Message.objects.create(chat=self.chat, sender=self.awa, content='Salam')
+            self.assertEqual(self.evenements('new-message'), [])
+        self.assertTrue(rappels)
+
+    def test_la_bulle_optimiste_retrouve_son_message(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.post('/api/comms/messages/', {'chat': self.chat.id, 'content': '', 'client_id': 'tmp-42',
+                                                     'file': SimpleUploadedFile('a.txt', b'x')}, format='multipart')
+        (canal, _, charge), = self.evenements('new-message')
+        self.assertEqual(charge['client_id'], 'tmp-42')
+        Message.objects.get(pk=charge['id']).file.delete(save=False)
+
+    def test_une_reaction_publie_l_etat_complet(self):
+        message = Message.objects.create(chat=self.chat, sender=self.awa, content='Salam')
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.post(f'/api/comms/messages/{message.id}/react/', {'emoji': '🙏'}, format='json')
+        charge = self.evenements('message-reaction')[-1][2]
+        self.assertEqual(charge['reactions'], [{'emoji': '🙏', 'count': 1, 'user_ids': [self.modou.id]}])
+
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.post(f'/api/comms/messages/{message.id}/react/', {'emoji': '🙏'}, format='json')
+        self.assertEqual(self.evenements('message-reaction')[-1][2]['reactions'], [])
+
+    def test_lu_sur_un_appareil_eteint_la_pastille_des_autres(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.post(f'/api/comms/{self.chat.id}/read/')
+        canaux = [args[0] for args in self.evenements('chat-read')]
+        self.assertIn(f'private-user.{self.modou.id}', canaux)
+        self.assertIn(f'private-chat.{self.chat.id}', canaux)
+
+    def test_le_total_des_non_lus_ignore_la_sourdine(self):
+        autre = salon(self.awa, self.modou, name='Autre')
+        for chat in (self.chat, self.chat, autre):
+            Message.objects.create(chat=chat, sender=self.awa, content='x')
+        self.assertEqual(self.client.get('/api/comms/unread/').json(), {'total': 3, 'chats': 2})
+        ChatMembership.objects.filter(chat=autre, user=self.modou).update(is_muted=True)
+        self.assertEqual(self.client.get('/api/comms/unread/').json(), {'total': 2, 'chats': 1})

@@ -35,7 +35,7 @@ from .serializers import (
     UserMessagingPreferencesSerializer,
 )
 from .notify import nom_de, notify, notify_many
-from .services import can_invite, get_effective_config, note_systeme, pusher_client, trigger_pusher
+from .services import can_invite, get_effective_config, note_systeme, publier, pusher_client
 from core.phone import phone_digits
 
 User = get_user_model()
@@ -172,13 +172,31 @@ class ChatViewSet(viewsets.ModelViewSet):
 
         membership.last_read_at = timezone.now()
         membership.save(update_fields=['last_read_at'])
-        # Le « Vu » de l'autre côté se met à jour sans recharger.
-        trigger_pusher(
-            f'private-chat.{chat.id}',
-            'chat-read',
-            {'user_id': request.user.id, 'read_at': membership.last_read_at.isoformat()},
-        )
+        # Le « Vu » de l'autre côté se met à jour sans recharger…
+        lu = {'chat_id': chat.id, 'user_id': request.user.id, 'read_at': membership.last_read_at.isoformat()}
+        publier(f'private-chat.{chat.id}', 'chat-read', lu)
+        # … et la pastille s'éteint sur ses AUTRES appareils : lu sur le
+        # téléphone, le salon restait marqué non lu sur l'ordinateur.
+        publier(f'private-user.{request.user.id}', 'chat-read', lu)
         return Response({'success': True, 'read_at': membership.last_read_at.isoformat()})
+
+    @action(detail=False, methods=['get'], url_path='unread')
+    def unread_summary(self, request):
+        """Le total des non-lus, pour la pastille du menu et de l'onglet.
+
+        Les fils en sourdine n'y comptent pas : la sourdine, c'est justement
+        ne pas être appelé.
+        """
+        muets = set(
+            ChatMembership.objects.filter(user=request.user, is_muted=True).values_list('chat_id', flat=True)
+        )
+        total = conversations = 0
+        for chat_id, non_lus in self.get_queryset().values_list('id', 'unread_count_annotated'):
+            if chat_id in muets or not non_lus:
+                continue
+            total += non_lus
+            conversations += 1
+        return Response({'total': total, 'chats': conversations})
 
     @action(detail=True, methods=['post'], url_path='mute')
     def toggle_mute(self, request, pk=None):

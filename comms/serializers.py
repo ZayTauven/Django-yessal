@@ -144,6 +144,8 @@ class MessageSerializer(serializers.ModelSerializer):
     # Vide autorisé : une pièce jointe peut partir sans légende. La règle
     # « un texte ou un fichier » est posée par `validate`.
     content = serializers.CharField(allow_blank=True, required=False, default='')
+    # Rendu tel quel dans l'événement Pusher du message — voir `signals._charge`.
+    client_id = serializers.CharField(write_only=True, required=False, max_length=64)
 
     class Meta:
         model = Message
@@ -151,9 +153,17 @@ class MessageSerializer(serializers.ModelSerializer):
             'id', 'chat', 'sender', 'message_type', 'content',
             'file', 'file_url', 'file_name', 'file_size', 'file_is_image', 'file_kind',
             'reply_to', 'reply_preview', 'reactions', 'is_deleted', 'sent_at',
-            'edited_at', 'payload',
+            'edited_at', 'payload', 'client_id',
         ]
         read_only_fields = ['sender', 'sent_at', 'edited_at', 'payload']
+
+    def create(self, validated_data):
+        client_id = validated_data.pop('client_id', None)
+        message = Message(**validated_data)
+        # Porté par l'instance le temps du `post_save` qui publie l'événement.
+        message._client_id = client_id
+        message.save()
+        return message
         extra_kwargs = {'file': {'write_only': True}}
 
     def validate(self, attrs):

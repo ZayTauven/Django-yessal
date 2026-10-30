@@ -25,7 +25,6 @@ User = get_user_model()
 class Base(APITestCase):
     def setUp(self):
         mock.patch('comms.services.trigger_pusher').start()
-        mock.patch('comms.signals.trigger_pusher').start()
         self.fcm = mock.patch('comms.services.send_fcm_push').start()
         mock.patch('comms.services.lancer_en_arriere_plan', side_effect=lambda fn: fn()).start()
         self.addCleanup(mock.patch.stopall)
