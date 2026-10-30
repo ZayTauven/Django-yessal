@@ -720,8 +720,13 @@ class MemberSearchView(APIView):
         # Récupérer la configuration de pilotage du demandeur
         config = get_effective_config(request.user)
 
-        # Commencer par filtrer les membres actifs (hors admin)
-        users_qs = User.objects.filter(is_active=True).exclude(role=User.Role.ADMIN).exclude(id=request.user.id)
+        # Les membres actifs. Les comptes d'administration restent hors de
+        # portée des membres — mais pas d'un autre administrateur : exclus
+        # pour tout le monde, deux admins ne se trouvaient jamais, ni pour
+        # un tête-à-tête ni pour un salon (constaté le 2026-10-30).
+        users_qs = User.objects.filter(is_active=True).exclude(id=request.user.id)
+        if request.user.role != User.Role.ADMIN:
+            users_qs = users_qs.exclude(role=User.Role.ADMIN)
 
         # ═══════════════════════════════════════════════════════════════════
         # La recherche porte sur le nom COMPLET, mot par mot

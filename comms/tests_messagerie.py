@@ -219,6 +219,48 @@ class SalonTests(SansReseau):
         self.assertTrue(rows[0]['is_muted'])
 
 
+class AdminsEntreEuxTests(SansReseau):
+    """Deux administrateurs ne se trouvaient pas : la recherche et l'annuaire
+    écartaient tout compte admin, quel que soit celui qui cherchait."""
+
+    def setUp(self):
+        super().setUp()
+        self.fatou = creer('fatou@ex.org', first_name='Fatou', last_name='Diop', role=User.Role.ADMIN)
+        self.ibou = creer('ibou@ex.org', first_name='Ibou', last_name='Diop', role=User.Role.ADMIN)
+        self.guide = creer('guide@ex.org', first_name='Sokhna', last_name='Diop', role=User.Role.GUIDE)
+        self.awa = creer('awa@ex.org', first_name='Awa', last_name='Diop')
+
+    def ids_trouves(self, qui, q='Diop'):
+        self.client.force_authenticate(qui)
+        return {u['id'] for u in self.client.get('/api/comms/search-members/', {'q': q}).json()}
+
+    def test_un_admin_trouve_un_autre_admin(self):
+        self.assertEqual(self.ids_trouves(self.fatou), {self.ibou.id, self.guide.id, self.awa.id})
+
+    def test_un_membre_ne_trouve_toujours_pas_les_admins(self):
+        self.assertEqual(self.ids_trouves(self.awa), {self.guide.id})
+
+    def test_l_annuaire_de_la_messagerie_porte_admins_et_guide(self):
+        self.client.force_authenticate(self.fatou)
+        ids = {u['id'] for u in self.client.get('/api/directory/users/', {'messagerie': '1'}).json()}
+        self.assertTrue({self.ibou.id, self.guide.id, self.awa.id} <= ids)
+        # Sans le paramètre, l'annuaire reste celui de la communauté.
+        ids = {u['id'] for u in self.client.get('/api/directory/users/').json()}
+        self.assertEqual(ids, {self.awa.id})
+
+    def test_un_coordinateur_n_obtient_pas_les_admins_par_le_parametre(self):
+        chef = creer('chef@ex.org', role=User.Role.CHEF_DAARA)
+        self.client.force_authenticate(chef)
+        ids = {u['id'] for u in self.client.get('/api/directory/users/', {'messagerie': '1'}).json()}
+        self.assertNotIn(self.ibou.id, ids)
+
+    def test_un_admin_ajoute_un_autre_admin_a_un_salon(self):
+        chat = salon(self.fatou, self.awa)
+        self.client.force_authenticate(self.fatou)
+        r = self.client.post(f'/api/comms/{chat.id}/add-members/', {'user_ids': [self.ibou.id]}, format='json')
+        self.assertEqual(r.json(), {'added': 1})
+
+
 class TempsReelTests(SansReseau):
     """Ce que les événements Pusher portent, et quand ils partent."""
 
