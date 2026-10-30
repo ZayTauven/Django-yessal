@@ -112,7 +112,7 @@ def push_notification_to_fcm(sender, instance, created, **kwargs):
             user_id=instance.user_id,
             title=instance.title,
             body=instance.message,
-            data={'url': '/dashboard/notifications'},
+            data={'url': instance.url or '/dashboard/notifications'},
         )
 
 
@@ -126,14 +126,25 @@ def create_messaging_preferences(sender, instance, created, **kwargs):
         abonner(instance)
 
 
+#: Ce qui décide des fils d'un membre : son rôle, son titre, son Daara, son statut.
+CHAMPS_D_AUDIENCE = ('role', 'title_id', 'daara_id', 'is_active')
+
+
 @receiver(pre_save, sender=settings.AUTH_USER_MODEL)
 def retenir_le_role(sender, instance, update_fields=None, **kwargs):
-    """Le rôle d'AVANT l'écriture : seul moyen de savoir qu'il change."""
+    """L'état d'AVANT l'écriture : seul moyen de savoir ce qui change.
+
+    Une seule lecture, et seulement quand l'écriture peut toucher ces champs —
+    `last_login` et consorts passent ici avec `update_fields` sans eux.
+    """
     instance._role_avant = None
-    if instance.pk and (update_fields is None or 'role' in update_fields):
-        instance._role_avant = (
-            sender.objects.filter(pk=instance.pk).values_list('role', flat=True).first()
-        )
+    instance._audience_avant = None
+    concernes = {'role', 'title', 'title_id', 'daara', 'daara_id', 'is_active'}
+    if instance.pk and (update_fields is None or concernes & set(update_fields)):
+        avant = sender.objects.filter(pk=instance.pk).values(*CHAMPS_D_AUDIENCE).first()
+        if avant:
+            instance._role_avant = avant['role']
+            instance._audience_avant = tuple(avant[c] for c in CHAMPS_D_AUDIENCE)
 
 
 @receiver(post_save, sender=settings.AUTH_USER_MODEL)
@@ -164,3 +175,16 @@ def auteur_du_canal_du_guide(sender, instance, created, update_fields=None, **kw
     if membership.can_post != droit:
         membership.can_post = droit
         membership.save(update_fields=['can_post'])
+
+
+@receiver(post_save, sender=settings.AUTH_USER_MODEL)
+def suivre_les_audiences(sender, instance, created, **kwargs):
+    """Titre, Daara, rôle ou statut changé : les canaux ciblés et les salons
+    par titre suivent (`comms/audience.py`). La création, elle, passe par
+    `abonner` (`create_messaging_preferences`)."""
+    avant = getattr(instance, '_audience_avant', None)
+    if created or avant is None:
+        return
+    if avant != tuple(getattr(instance, c) for c in CHAMPS_D_AUDIENCE):
+        from .audience import resynchroniser_membre
+        resynchroniser_membre(instance)

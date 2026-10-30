@@ -262,9 +262,10 @@ def destinataires_push(message):
     from .models import Chat, ChatMembership
 
     chat = message.chat
-    if chat.chat_type == Chat.ChatType.CHANNEL and chat.channel_kind != Chat.ChannelKind.GUIDE:
-        # « Les Jëfs du Kourel » ne sonne jamais : un Jëf par minute le jour
-        # d'un Magal ferait vibrer chaque téléphone sans relâche.
+    if chat.chat_type == Chat.ChatType.CHANNEL and not chat.push_enabled:
+        # Un canal muet par réglage (2026-10-30). « Les Jëfs du Kourel » l'est
+        # d'origine : un Jëf par minute le jour d'un Magal ferait vibrer chaque
+        # téléphone sans relâche.
         return []
 
     memberships = list(
@@ -272,7 +273,7 @@ def destinataires_push(message):
         .exclude(user_id=message.sender_id)
         .select_related('user', 'user__messaging_preferences')
     )
-    # Une annonce du guide atteint tout le monde, quel que soit l'effectif.
+    # Un canal qui sonne atteint tous ses abonnés, quel que soit l'effectif.
     canal_du_guide = chat.chat_type == Chat.ChatType.CHANNEL
     grand = not canal_du_guide and (
         message.chat.chat_type == Chat.ChatType.GROUP

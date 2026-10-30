@@ -27,7 +27,7 @@ class AnnouncementSerializer(serializers.ModelSerializer):
 class NotificationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Notification
-        fields = ['id', 'title', 'message', 'is_read', 'created_at']
+        fields = ['id', 'title', 'message', 'is_read', 'url', 'created_at']
 
 
 class UserBriefSerializer(serializers.ModelSerializer):
@@ -157,6 +157,18 @@ class MessageSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['sender', 'sent_at', 'edited_at', 'payload']
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # Le montant d'un Jëf ne quitte le serveur que si l'administration l'a
+        # activé sur ce canal ; la carte n'en porte de toute façon que lorsque
+        # le donateur a accepté d'être nommé (`canaux.composer_carte`). Retiré
+        # ICI et pas à l'affichage : un client ne reçoit jamais ce qu'il ne
+        # doit pas montrer.
+        payload = data.get('payload')
+        if isinstance(payload, dict) and 'amount' in payload and not instance.chat.show_amounts:
+            data['payload'] = {k: v for k, v in payload.items() if k != 'amount'}
+        return data
+
     def create(self, validated_data):
         client_id = validated_data.pop('client_id', None)
         message = Message(**validated_data)
@@ -238,6 +250,8 @@ class ChatSerializer(serializers.ModelSerializer):
     last_activity_at = serializers.SerializerMethodField()
     created_by = serializers.PrimaryKeyRelatedField(read_only=True)
     can_post = serializers.SerializerMethodField()
+    pinned_message = serializers.SerializerMethodField()
+    is_system = serializers.SerializerMethodField()
 
     class Meta:
         model = Chat
@@ -246,10 +260,33 @@ class ChatSerializer(serializers.ModelSerializer):
             'unread_count', 'members_count', 'is_muted', 'peer_id',
             'peer_last_read_at', 'last_activity_at', 'daara', 'campaign',
             'created_by', 'created_at', 'channel_kind', 'description', 'can_post',
+            'audience', 'push_enabled', 'show_amounts', 'icon', 'archived_at',
+            'pinned_message', 'is_system',
         ]
 
+    def get_is_system(self, obj):
+        """Un canal fondateur (Sangue Bi, Jëfs) : ni archivé, ni ciblé."""
+        return bool(obj.channel_kind)
+
+    def get_pinned_message(self, obj):
+        """Le message épinglé, en aperçu — le bandeau en tête du fil."""
+        from .notify import nom_de
+
+        m = obj.pinned_message
+        if not m or m.is_deleted:
+            return None
+        return {
+            'id': m.id,
+            'preview': apercu_message(m),
+            'sender_name': nom_de(m.sender) if m.sender_id else '',
+            'sent_at': m.sent_at.isoformat(),
+        }
+
     def get_can_post(self, obj):
-        """Peut-on écrire ici ? Partout oui, sauf dans un canal sans être auteur."""
+        """Peut-on écrire ici ? Partout oui, sauf dans un canal sans être
+        auteur — et nulle part dans un fil archivé."""
+        if obj.archived_at:
+            return False
         if obj.chat_type != Chat.ChatType.CHANNEL:
             return True
         membership = self._my_membership(obj)
@@ -416,6 +453,11 @@ class CreateGroupChatSerializer(serializers.ModelSerializer):
     daara_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
     preset_daara_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
     campaign_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
+    # Un salon PAR TITRE (administration seulement) : ses membres suivent le
+    # titre — qui le reçoit y entre, qui le perd en sort (`comms/audience.py`).
+    title_ids = serializers.ListField(
+        child=serializers.IntegerField(), write_only=True, required=False,
+    )
 
     class Meta:
         model = Chat
@@ -423,6 +465,7 @@ class CreateGroupChatSerializer(serializers.ModelSerializer):
             'id',
             'chat_type',
             'name',
+            'title_ids',
             'member_ids',
             'manual_user_ids',
             'invite_mode',
@@ -439,6 +482,13 @@ class CreateGroupChatSerializer(serializers.ModelSerializer):
         daara_id = validated_data.pop('daara_id', None)
         preset_daara_id = validated_data.pop('preset_daara_id', None)
         campaign_id = validated_data.pop('campaign_id', None)
+        title_ids = validated_data.pop('title_ids', None) or []
+        if title_ids:
+            from rest_framework.exceptions import PermissionDenied
+            from .audience import normaliser
+            if not request or request.user.role != User.Role.ADMIN:
+                raise PermissionDenied("Seule l'administration crée un salon par titre.")
+            validated_data['audience'] = normaliser({'titles': title_ids})
         validated_data['chat_type'] = Chat.ChatType.GROUP
         if daara_id:
             validated_data['daara_id'] = daara_id
@@ -467,6 +517,10 @@ class CreateGroupChatSerializer(serializers.ModelSerializer):
         # Le créateur est toujours membre
         if request and request.user:
             ChatMembership.objects.create(chat=chat, user=request.user, added_by=request.user)
+
+        if chat.audience:
+            from .audience import synchroniser
+            synchroniser(chat)
 
         # Ajouter les autres membres
         for uid in member_ids:

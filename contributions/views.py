@@ -76,6 +76,8 @@ def _accuser_encaissement(donation):
         donation.donor,
         code='jef_encaisse',
         titre='Jëf encaissé',
+        # Le reçu du Jëf, et non la liste des notifications.
+        url=f'/dashboard/donations/{donation.pk}',
         message=(
             f"{collecteur} a reçu votre Jëf de {montant} FCFA "
             f"pour « {campagne} ». Il sera confirmé dès sa remise à l'administration."
@@ -470,6 +472,7 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
             donation.donor,
             code='virement_confirme',
             titre='Virement confirmé',
+            url=f'/dashboard/donations/{donation.pk}',
             message=f'Votre virement de {montant_lisible(donation.amount)} FCFA a été confirmé.',
             contexte={
                 'donation': donation,
@@ -556,6 +559,7 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
             donation.donor,
             code='jef_pris_en_charge',
             titre='Un collecteur arrive',
+            url=f'/dashboard/donations/{donation.pk}',
             message=(
                 f"{nom_de(request.user)} s'occupe de votre Jëf de "
                 f"{montant_lisible(donation.amount)} FCFA et va vous contacter."
@@ -585,6 +589,7 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
             donation.donor,
             code='jef_pris_en_charge',
             titre='Votre collecteur ne peut plus venir',
+            url=f'/dashboard/donations/{donation.pk}',
             message=(
                 f"{nom_de(ancien)} ne peut plus s'occuper de votre Jëf de "
                 f"{montant_lisible(donation.amount)} FCFA. Votre demande reste "
@@ -718,6 +723,7 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
                 d.donor,
                 code='paiement_confirme',
                 titre='Jëf confirmé',
+                url=f'/dashboard/donations/{d.pk}',
                 message=f"Votre Jëf de {montant_lisible(d.amount)} FCFA a été remis à l'administration et confirmé.",
                 contexte={
                     'donation': d,
@@ -788,6 +794,7 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
         )
         notify(
             donation.donor, code='jef_annule', titre='Jëf annulé', message=message,
+            url=f'/dashboard/donations/{donation.pk}',
             contexte={
                 'montant': montant_lisible(donation.amount),
                 'campagne': donation.campaign.name if donation.campaign else '',
@@ -800,6 +807,7 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
                 code='jef_annule',
                 titre='Jëf annulé',
                 message=f"Le Jëf n°{donation.pk} de {nom_de(donation.donor)} a été annulé. Motif : {motif}",
+                url=f'/dashboard/donations/{donation.pk}',
                 courriel=False,
             )
         return Response(DonationSerializer(donation).data)

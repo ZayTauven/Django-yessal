@@ -109,6 +109,7 @@ def bictorys_webhook(request):
                 donation.donor,
                 code='paiement_confirme',
                 titre='Paiement confirmé',
+                url=f'/dashboard/donations/{donation.pk}',
                 message=(
                     f'Votre paiement de {montant_lisible(donation.amount)} FCFA '
                     f'a été confirmé.'

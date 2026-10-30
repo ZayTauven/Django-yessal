@@ -27,6 +27,28 @@ class Chat(models.Model):
         max_length=20, choices=ChannelKind.choices, blank=True, null=True, unique=True,
     )
     description = models.CharField(max_length=255, blank=True, default='')
+
+    # ── Gestion par l'administration (arbitrages du 2026-10-30) ─────────────
+    # À QUI s'adresse le fil, recalculé quand un membre change de titre, de
+    # Daara ou de rôle (`comms/audience.py`). `None` : un canal pour tout le
+    # Kourel, ou un salon composé à la main. Sinon un dict de listes d'ids —
+    # `{"titles": [3], "ldds": [], "daaras": [], "roles": ["chef_daara"]}` —
+    # combinées en ET entre catégories, en OU à l'intérieur d'une catégorie.
+    audience = models.JSONField(null=True, blank=True)
+    # Un canal sonne-t-il sur les téléphones à chaque publication ?
+    push_enabled = models.BooleanField(default=True)
+    # « Les Jëfs du Kourel » : montrer le montant des Jëfs dont le donateur a
+    # accepté d'être nommé. Jamais celui d'un Jëf anonyme.
+    show_amounts = models.BooleanField(default=False)
+    # Clé d'une icône d'une liste fermée (`audience.ICONES`), dessinée par les
+    # clients ; vide : l'icône par défaut du type de fil.
+    icon = models.CharField(max_length=30, blank=True, default='')
+    # Archivé : hors des listes, historique conservé, réactivable.
+    archived_at = models.DateTimeField(null=True, blank=True)
+    pinned_message = models.ForeignKey(
+        'Message', on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+
     daara = models.ForeignKey(
         'accounts.Daara',
         on_delete=models.CASCADE,
@@ -76,6 +98,9 @@ class ChatMembership(models.Model):
     last_read_at = models.DateTimeField(null=True, blank=True)
     # Dans un canal : auteur désigné par l'administrateur. Sans effet ailleurs.
     can_post = models.BooleanField(default=False)
+    # Ajouté PAR L'AUDIENCE du fil : la synchronisation peut le retirer quand
+    # il n'en fait plus partie. Un ajout à la main (False) n'est jamais retiré.
+    par_audience = models.BooleanField(default=False)
 
     class Meta:
         unique_together = ('chat', 'user')
@@ -284,6 +309,10 @@ class Notification(models.Model):
     title = models.CharField(max_length=255)
     message = models.TextField()
     is_read = models.BooleanField(default=False)
+    # Où mène la notification, en chemin web (`/dashboard/...`) : le push le
+    # porte, le mobile le traduit en écran (`hooks/usePushNavigation.ts`).
+    # Vide : la liste des notifications, comme avant.
+    url = models.CharField(max_length=255, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

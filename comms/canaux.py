@@ -81,12 +81,13 @@ def compte_systeme():
 
 
 def abonner(user):
-    """Abonne un membre à tous les canaux du Kourel — à la création du compte."""
-    from .models import Chat, ChatMembership
+    """Abonne un nouveau membre aux fils qui s'adressent à lui — à la création
+    du compte : les canaux du Kourel entier, et ceux dont l'audience le vise
+    (`comms/audience.py`)."""
+    from .audience import resynchroniser_membre
     if user.email == EMAIL_SYSTEME:
         return
-    for chat in Chat.objects.filter(chat_type=Chat.ChatType.CHANNEL):
-        ChatMembership.objects.get_or_create(chat=chat, user=user)
+    resynchroniser_membre(user)
 
 
 def _hors_senegal(user):
@@ -149,6 +150,10 @@ def composer_carte(donation, rang):
         'campaign_id': donation.campaign_id,
         'campaign_name': ndiguel,
         'donor': auteur,
+        # Le montant, SEULEMENT si le donateur a accepté d'être nommé ; il ne
+        # quitte le serveur que si l'administration l'affiche sur le canal
+        # (`MessageSerializer.to_representation`). Un Jëf anonyme n'en a pas.
+        **({'amount': int(donation.amount)} if public else {}),
         **illustration,
     }
 

@@ -115,9 +115,20 @@ class ChatViewSet(viewsets.ModelViewSet):
         last_message_qs = Message.objects.filter(chat_id=OuterRef('pk')).order_by('-sent_at')
         memberships_qs = ChatMembership.objects.select_related('user', 'user__daara', 'user__title')
 
+        fils = Chat.objects.filter(id__in=chat_ids)
+        # Un fil archivé sort des listes ; ses écrans de gestion (détail,
+        # réglages, réactivation) le trouvent toujours. L'administration le
+        # retrouve dans la liste avec `?archives=1`.
+        if self.action == 'list':
+            voir_archives = (
+                self.request.query_params.get('archives') == '1'
+                and user.role == User.Role.ADMIN
+            )
+            if not voir_archives:
+                fils = fils.filter(archived_at__isnull=True)
         return (
-            Chat.objects.filter(id__in=chat_ids)
-            .select_related('campaign', 'daara')
+            fils
+            .select_related('campaign', 'daara', 'pinned_message', 'pinned_message__sender')
             .prefetch_related(Prefetch('memberships', queryset=memberships_qs))
             .annotate(
                 members_count_annotated=Count('memberships', distinct=True),
@@ -282,6 +293,147 @@ class ChatViewSet(viewsets.ModelViewSet):
         membership.save(update_fields=['can_post'])
         return Response({'user_id': membership.user_id, 'can_post': membership.can_post})
 
+    # ── Gestion des canaux par l'administration (2026-10-30) ───────────────
+
+    def _admin(self, request):
+        if request.user.role != User.Role.ADMIN:
+            raise PermissionDenied("Réservé à l'administration.")
+
+    def _annoncer_changement(self, chat):
+        """Les listes ouvertes se rafraîchissent : nom, icône, archivage…"""
+        canal = 'private-kourel' if chat.chat_type == Chat.ChatType.CHANNEL else f'private-chat.{chat.pk}'
+        publier(canal, 'chat-settings', {'chat_id': chat.pk})
+
+    @action(detail=False, methods=['post'], url_path='channels')
+    @transaction.atomic
+    def create_channel(self, request):
+        """Créer un canal du Kourel : pour tous, ou pour une audience ciblée.
+
+        Corps : `name`, `description`, `icon`, `push_enabled`, `audience`.
+        Le créateur en est le premier auteur ; d'autres se désignent ensuite.
+        """
+        from .audience import ICONES, normaliser, synchroniser
+        self._admin(request)
+        nom = (request.data.get('name') or '').strip()
+        if not nom:
+            raise ValidationError({'name': "Donnez un nom au canal."})
+        icone = (request.data.get('icon') or '').strip()
+        if icone and icone not in ICONES:
+            raise ValidationError({'icon': "Icône inconnue."})
+        chat = Chat.objects.create(
+            chat_type=Chat.ChatType.CHANNEL,
+            name=nom[:200],
+            description=(request.data.get('description') or '').strip()[:255],
+            icon=icone,
+            push_enabled=bool(request.data.get('push_enabled', True)),
+            audience=normaliser(request.data.get('audience')),
+            created_by=request.user,
+        )
+        ChatMembership.objects.create(chat=chat, user=request.user, added_by=request.user, can_post=True)
+        synchroniser(chat)
+        transaction.on_commit(lambda: self._annoncer_changement(chat))
+        return Response(ChatSerializer(chat, context={'request': request}).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['patch'], url_path='settings')
+    def update_settings(self, request, pk=None):
+        """Réglages d'un canal (ou d'un salon par titre). Administration seulement.
+
+        `name`, `description`, `icon`, `push_enabled` ; `show_amounts` sur
+        « Les Jëfs du Kourel » ; `audience` sur un canal créé par
+        l'administration ou un salon par titre — jamais sur un canal fondateur.
+        """
+        from .audience import ICONES, normaliser, synchroniser
+        self._admin(request)
+        chat = self.get_object()
+        if chat.chat_type == Chat.ChatType.DIRECT:
+            raise ValidationError("Un tête-à-tête n'a pas de réglages.")
+        champs = []
+        data = request.data
+        if 'name' in data:
+            nom = (data.get('name') or '').strip()
+            if not nom:
+                raise ValidationError({'name': "Le nom ne peut pas être vide."})
+            chat.name = nom[:200]
+            champs.append('name')
+        if 'description' in data:
+            chat.description = (data.get('description') or '').strip()[:255]
+            champs.append('description')
+        if 'icon' in data:
+            icone = (data.get('icon') or '').strip()
+            if icone and icone not in ICONES:
+                raise ValidationError({'icon': "Icône inconnue."})
+            chat.icon = icone
+            champs.append('icon')
+        if 'push_enabled' in data:
+            if chat.chat_type != Chat.ChatType.CHANNEL:
+                raise ValidationError({'push_enabled': "Réglage réservé aux canaux."})
+            chat.push_enabled = bool(data.get('push_enabled'))
+            champs.append('push_enabled')
+        if 'show_amounts' in data:
+            if chat.channel_kind != Chat.ChannelKind.JEFS:
+                raise ValidationError({'show_amounts': "Réglage propre à « Les Jëfs du Kourel »."})
+            chat.show_amounts = bool(data.get('show_amounts'))
+            champs.append('show_amounts')
+        resynchroniser = False
+        if 'audience' in data:
+            if chat.channel_kind:
+                raise ValidationError({'audience': "Un canal fondateur s'adresse à tout le Kourel."})
+            if chat.chat_type == Chat.ChatType.GROUP and not chat.audience:
+                raise ValidationError({'audience': "Ce salon est composé à la main."})
+            nouvelle = normaliser(data.get('audience'))
+            if chat.chat_type == Chat.ChatType.GROUP and not nouvelle:
+                raise ValidationError({'audience': "Un salon par titre garde au moins un titre."})
+            chat.audience = nouvelle
+            champs.append('audience')
+            resynchroniser = True
+        if champs:
+            chat.save(update_fields=champs)
+        if resynchroniser:
+            synchroniser(chat)
+        self._annoncer_changement(chat)
+        return Response(ChatSerializer(self.get_queryset().get(pk=chat.pk), context={'request': request}).data)
+
+    @action(detail=True, methods=['post'], url_path='archive')
+    def archive(self, request, pk=None):
+        """Archiver (`archived: true`) ou réactiver un fil. Historique conservé."""
+        self._admin(request)
+        chat = self.get_object()
+        if chat.channel_kind:
+            raise ValidationError("Un canal fondateur ne s'archive pas.")
+        if chat.chat_type == Chat.ChatType.DIRECT:
+            raise ValidationError("Un tête-à-tête ne s'archive pas.")
+        chat.archived_at = timezone.now() if request.data.get('archived', True) else None
+        chat.save(update_fields=['archived_at'])
+        self._annoncer_changement(chat)
+        return Response({'id': chat.pk, 'archived_at': chat.archived_at})
+
+    @action(detail=True, methods=['post'], url_path='pin')
+    def pin(self, request, pk=None):
+        """Épingler un message en tête du fil (`message_id`), ou désépingler (vide).
+
+        L'administration partout ; dans un canal, ses auteurs ; dans un salon,
+        son créateur.
+        """
+        chat = self.get_object()
+        membre = ChatMembership.objects.filter(chat=chat, user=request.user).first()
+        permis = request.user.role == User.Role.ADMIN or (
+            chat.chat_type == Chat.ChatType.CHANNEL and membre is not None and membre.can_post
+        ) or (chat.chat_type == Chat.ChatType.GROUP and chat.created_by_id == request.user.id)
+        if not permis:
+            raise PermissionDenied("Vous ne pouvez pas épingler dans ce fil.")
+        message_id = request.data.get('message_id')
+        if message_id:
+            message = Message.objects.filter(pk=message_id, chat=chat, is_deleted=False).first()
+            if not message:
+                raise ValidationError({'message_id': "Ce message n'est pas dans ce fil."})
+            chat.pinned_message = message
+        else:
+            chat.pinned_message = None
+        chat.save(update_fields=['pinned_message'])
+        payload = ChatSerializer(chat, context={'request': request}).data['pinned_message']
+        publier(f'private-chat.{chat.pk}', 'chat-pinned', {'chat_id': chat.pk, 'pinned_message': payload})
+        return Response({'pinned_message': payload})
+
 
 class MessageViewSet(viewsets.ModelViewSet):
     serializer_class = MessageSerializer
@@ -298,7 +450,7 @@ class MessageViewSet(viewsets.ModelViewSet):
             # `UserBriefSerializer` lit `daara.name`, `MessageSerializer` les
             # réactions et la citation : sans ces jointures, une requête par
             # message et par champ.
-            .select_related('sender', 'sender__daara', 'sender__title', 'reply_to', 'reply_to__sender')
+            .select_related('chat', 'sender', 'sender__daara', 'sender__title', 'reply_to', 'reply_to__sender')
             .prefetch_related('reactions')
         )
         chat_id = self.request.query_params.get('chat')
@@ -375,6 +527,8 @@ class MessageViewSet(viewsets.ModelViewSet):
         membership = ChatMembership.objects.filter(chat=chat, user=self.request.user).first()
         if not membership:
             raise PermissionDenied("Vous n'êtes pas membre de cette discussion.")
+        if chat.archived_at:
+            raise PermissionDenied("Ce fil est archivé : on ne peut plus y écrire.")
         if chat.chat_type == Chat.ChatType.CHANNEL:
             if not membership.can_post:
                 raise PermissionDenied("Dans ce canal, on réagit ; seuls les auteurs désignés publient.")

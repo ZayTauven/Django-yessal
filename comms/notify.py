@@ -34,7 +34,7 @@ from core.mail import send_to_user, send_to_users
 logger = logging.getLogger(__name__)
 
 
-def notify(user, *, code, titre, message, contexte=None, courriel=True):
+def notify(user, *, code, titre, message, contexte=None, courriel=True, url=''):
     """Prévient un membre en base, et par courriel si une adresse existe.
 
     `code` désigne le gabarit (voir `core.mail.SUJETS` et docs/EMAILS.md).
@@ -43,6 +43,8 @@ def notify(user, *, code, titre, message, contexte=None, courriel=True):
 
     `courriel=False` pour un événement trop fréquent pour justifier un envoi
     (un message de salon, par exemple) : la notification en base suffit.
+
+    `url` : l'écran qu'ouvre la notification (chemin web, `/dashboard/...`).
     """
     # Import différé : comms.models importe des services qui importent des
     # modèles, et un import de haut niveau referme la boucle.
@@ -52,7 +54,7 @@ def notify(user, *, code, titre, message, contexte=None, courriel=True):
         return
 
     try:
-        Notification.objects.create(user=user, title=titre, message=message)
+        Notification.objects.create(user=user, title=titre, message=message, url=url or '')
     except Exception:
         logger.exception("Notification non enregistrée pour le membre %s", getattr(user, 'pk', '?'))
 
