@@ -141,6 +141,13 @@ class User(AbstractUser):
         COLLECTOR = 'collector', _('Collector')
         MEMBER = 'member', _('Member')
         TUTELLE = 'tutelle', _('Tutelle')
+        # La guide du Kourel, Sangue Bi (aussi appelée Kou Ted Ki). Elle VOIT
+        # tout — jusqu'au montant de chaque Jëf — et annonce au Kourel, mais
+        # ne valide ni ne modifie rien : la gestion reste à l'équipe. Pas de
+        # `is_staff`, donc aucun des écrans d'administration (décision du
+        # 2026-10-30). Ce rôle publie d'office dans « Annonces de Sangue Bi »
+        # (voir `comms.signals.auteur_du_canal_du_guide`).
+        GUIDE = 'guide', _('Sangue Bi (guide du Kourel)')
 
     class Status(models.TextChoices):
         PENDING = 'pending', _('Pending')

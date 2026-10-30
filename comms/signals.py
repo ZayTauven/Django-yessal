@@ -1,4 +1,4 @@
-from django.db.models.signals import post_save, post_delete
+from django.db.models.signals import post_save, post_delete, pre_save
 from django.dispatch import receiver
 from django.conf import settings
 from .models import Message, MessageReaction, ChatInvitation, Notification
@@ -124,3 +124,43 @@ def create_messaging_preferences(sender, instance, created, **kwargs):
         UserMessagingPreferences.objects.get_or_create(user=instance)
         # Les canaux du Kourel sont ouverts à tous, d'office.
         abonner(instance)
+
+
+@receiver(pre_save, sender=settings.AUTH_USER_MODEL)
+def retenir_le_role(sender, instance, update_fields=None, **kwargs):
+    """Le rôle d'AVANT l'écriture : seul moyen de savoir qu'il change."""
+    instance._role_avant = None
+    if instance.pk and (update_fields is None or 'role' in update_fields):
+        instance._role_avant = (
+            sender.objects.filter(pk=instance.pk).values_list('role', flat=True).first()
+        )
+
+
+@receiver(post_save, sender=settings.AUTH_USER_MODEL)
+def auteur_du_canal_du_guide(sender, instance, created, update_fields=None, **kwargs):
+    """La guide publie d'office dans son canal ; elle n'y publie plus si elle
+    quitte ce rôle.
+
+    Seul un PASSAGE de rôle touche au droit : un auteur désigné à la main par
+    un administrateur (`ChatViewSet.set_author`) le garde, quel que soit son
+    rôle, et une connexion (`last_login`) ne réécrit rien.
+    """
+    if update_fields is not None and 'role' not in update_fields:
+        return
+    avant = getattr(instance, '_role_avant', None)
+    guide = sender.Role.GUIDE
+    if instance.role == guide and (created or avant != guide):
+        droit = True
+    elif avant == guide and instance.role != guide:
+        droit = False
+    else:
+        return
+    from .canaux import canal
+    from .models import Chat, ChatMembership
+    chat = canal(Chat.ChannelKind.GUIDE)
+    if not chat:
+        return
+    membership, _ = ChatMembership.objects.get_or_create(chat=chat, user=instance)
+    if membership.can_post != droit:
+        membership.can_post = droit
+        membership.save(update_fields=['can_post'])

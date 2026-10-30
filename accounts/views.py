@@ -650,7 +650,9 @@ class DirectoryUserViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         user = self.request.user
         base = User.objects.filter(role__in=COMMUNITY_ROLES).select_related('daara', 'title')
-        if user.role == User.Role.ADMIN:
+        # La guide du Kourel voit tout le Kourel, comme l'administration — en
+        # lecture : promouvoir reste réservé à l'admin et au coordinateur.
+        if user.role in (User.Role.ADMIN, User.Role.GUIDE):
             return base.order_by('last_name', 'first_name')
 
         if user.role in (User.Role.CHEF_DAARA, User.Role.COLLECTOR, User.Role.MEMBER):

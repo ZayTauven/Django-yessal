@@ -26,6 +26,7 @@ from .views import (
     MemberAssignTitleView,
     CollecteurViewSet,
 )
+from .suivi import SuiviViewSet
 
 router = DefaultRouter()
 router.register(r'ldd', LDDViewSet, basename='ldd')
@@ -37,6 +38,7 @@ router.register(r'users', UserManagementViewSet, basename='users')
 router.register(r'directory/users', DirectoryUserViewSet, basename='directory-users')
 router.register(r'settings/pilotage', PilotageSettingsViewSet, basename='pilotage-settings')
 router.register(r'collecteurs', CollecteurViewSet, basename='collecteurs')
+router.register(r'suivi', SuiviViewSet, basename='suivi')
 router.register(r'titles', MemberTitleViewSet, basename='titles')
 router.register(r'title-requests', TitleRequestViewSet, basename='title-requests')
 router.register(r'admin/documents/pending', PendingDocumentValidationViewSet, basename='admin-documents-pending')
