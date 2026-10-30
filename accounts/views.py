@@ -649,19 +649,7 @@ class DirectoryUserViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        roles = COMMUNITY_ROLES
-        # `?messagerie=1` : l'annuaire sert de liste de choix pour les salons.
-        # Là, l'administrateur doit aussi trouver ses pairs et la guide du
-        # Kourel — absents des rôles de la communauté, ils ne pouvaient être
-        # ajoutés à aucun salon depuis le web. Les autres écrans (membres,
-        # Daara, promotions) gardent la communauté seule.
-        if (
-            self.action == 'list'
-            and self.request.query_params.get('messagerie') == '1'
-            and user.role == User.Role.ADMIN
-        ):
-            roles = COMMUNITY_ROLES + (User.Role.ADMIN, User.Role.GUIDE)
-        base = User.objects.filter(role__in=roles).select_related('daara', 'title')
+        base = User.objects.filter(role__in=COMMUNITY_ROLES).select_related('daara', 'title')
         # La guide du Kourel voit tout le Kourel, comme l'administration — en
         # lecture : promouvoir reste réservé à l'admin et au coordinateur.
         if user.role in (User.Role.ADMIN, User.Role.GUIDE):

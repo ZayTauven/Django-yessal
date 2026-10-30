@@ -35,7 +35,9 @@ from .serializers import (
     UserMessagingPreferencesSerializer,
 )
 from .notify import nom_de, notify, notify_many
-from .services import can_invite, get_effective_config, note_systeme, publier, pusher_client
+from .services import (
+    can_invite, get_effective_config, joignables, note_systeme, peut_moderer, publier, pusher_client,
+)
 from core.phone import phone_digits
 
 User = get_user_model()
@@ -237,25 +239,21 @@ class ChatViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='add-members')
     @transaction.atomic
     def add_members(self, request, pk=None):
-        """Ajouter des personnes à un salon existant.
+        """Ajouter des personnes à un salon existant — modérateurs seulement.
 
-        Mêmes droits que la création : l'administrateur, le coordinateur de
-        Daara — et le créateur du salon.
+        Les personnes que le modérateur ne pourrait pas joindre (pilotage,
+        préférences) ne sont pas ajoutées : elles sont comptées dans `refused`.
         """
-        chat = self.get_object()
-        if chat.chat_type != Chat.ChatType.GROUP:
-            raise ValidationError("On n'ajoute des membres qu'à un salon.")
-        role = request.user.role
-        if role not in (User.Role.ADMIN, User.Role.CHEF_DAARA) and chat.created_by_id != request.user.id:
-            raise PermissionDenied(
-                "Seuls l'administrateur, le coordinateur ou le créateur du salon ajoutent des membres."
-            )
-
+        chat, _ = self._salon_a_moderer(request)
         ids = request.data.get('user_ids') or []
         if not isinstance(ids, list) or not ids:
             raise ValidationError({'user_ids': 'Indiquez au moins une personne.'})
-        deja = set(chat.memberships.values_list('user_id', flat=True))
-        nouveaux = list(User.objects.filter(pk__in=ids, is_active=True).exclude(pk__in=deja))
+        try:
+            demandes = {int(i) for i in ids}
+        except (TypeError, ValueError):
+            raise ValidationError({'user_ids': 'Identifiants invalides.'})
+        demandes -= set(chat.memberships.values_list('user_id', flat=True))
+        nouveaux = list(joignables(request.user, salon=True).filter(pk__in=demandes))
         ChatMembership.objects.bulk_create(
             [ChatMembership(chat=chat, user=u, added_by=request.user) for u in nouveaux],
             ignore_conflicts=True,
@@ -266,17 +264,86 @@ class ChatViewSet(viewsets.ModelViewSet):
             if reste > 0:
                 noms += f" et {reste} autre{'s' if reste > 1 else ''}"
             note_systeme(chat, request.user, f"{nom_de(request.user)} a ajouté {noms}.")
-        return Response({'added': len(nouveaux)})
+        return Response({'added': len(nouveaux), 'refused': len(demandes) - len(nouveaux)})
+
+    def _salon_a_moderer(self, request):
+        """Le salon visé et l'appartenance de l'appelant, s'il peut le modérer."""
+        chat = self.get_object()
+        if chat.chat_type != Chat.ChatType.GROUP:
+            raise ValidationError("Seul un salon se modère.")
+        mienne = chat.memberships.filter(user=request.user).first()
+        if not peut_moderer(request.user, chat, mienne):
+            raise PermissionDenied("Seuls les modérateurs du salon gèrent ses membres.")
+        return chat, mienne
+
+    def _membre_vise(self, request, chat):
+        try:
+            user_id = int(request.data.get('user_id'))
+        except (TypeError, ValueError):
+            raise ValidationError({'user_id': 'Indiquez la personne.'})
+        membership = chat.memberships.select_related('user').filter(user_id=user_id).first()
+        if not membership:
+            raise ValidationError("Cette personne n'est pas dans le salon.")
+        return membership
+
+    @action(detail=True, methods=['post'], url_path='remove-member')
+    @transaction.atomic
+    def remove_member(self, request, pk=None):
+        """Retirer quelqu'un du salon.
+
+        On ne se retire pas soi-même (c'est « Quitter »). Un modérateur ne
+        retire ni un autre modérateur ni un administrateur — l'administration,
+        elle, retire qui elle veut. Un membre entré par son titre ne se retire
+        pas à la main : la synchronisation le remettrait.
+        """
+        chat, _ = self._salon_a_moderer(request)
+        cible = self._membre_vise(request, chat)
+        if cible.user_id == request.user.id:
+            raise ValidationError("Pour partir, quittez le salon.")
+        if request.user.role != User.Role.ADMIN and (cible.is_moderator or cible.user.role == User.Role.ADMIN):
+            raise PermissionDenied("Seule l'administration retire un modérateur ou un administrateur.")
+        if cible.par_audience and chat.audience:
+            raise ValidationError(
+                "Ce membre est là par son titre : il quittera le salon s'il perd ce titre."
+            )
+        cible.delete()
+        note_systeme(chat, request.user, f"{nom_de(request.user)} a retiré {nom_de(cible.user)}.")
+        return Response({'removed': cible.user_id})
+
+    @action(detail=True, methods=['post'], url_path='moderators')
+    @transaction.atomic
+    def set_moderator(self, request, pk=None):
+        """Nommer (ou décharger) un modérateur du salon.
+
+        Tout modérateur nomme ; on ne se décharge pas soi-même, pour qu'un
+        salon ne perde pas son dernier modérateur par mégarde.
+        """
+        chat, _ = self._salon_a_moderer(request)
+        cible = self._membre_vise(request, chat)
+        valeur = bool(request.data.get('is_moderator', True))
+        if not valeur and cible.user_id == request.user.id:
+            raise ValidationError("Un autre modérateur doit vous décharger.")
+        if cible.is_moderator != valeur:
+            cible.is_moderator = valeur
+            cible.save(update_fields=['is_moderator'])
+            geste = "a nommé" if valeur else "a déchargé"
+            suite = "modérateur du salon" if valeur else "de la modération du salon"
+            note_systeme(chat, request.user, f"{nom_de(request.user)} {geste} {nom_de(cible.user)} {suite}.")
+        return Response({'user_id': cible.user_id, 'is_moderator': cible.is_moderator})
 
     @action(detail=True, methods=['get'], url_path='members')
     def list_members(self, request, pk=None):
         chat = self.get_object()
-        memberships = chat.memberships.select_related('user', 'user__daara', 'user__title')
+        memberships = list(chat.memberships.select_related('user', 'user__daara', 'user__title'))
         if chat.chat_type == Chat.ChatType.CHANNEL:
             # Tout le Kourel : on ne renvoie que les auteurs, pas des milliers de lignes.
-            memberships = memberships.filter(can_post=True)
-        members = [m.user for m in memberships]
-        return Response(UserBriefSerializer(members, many=True, context={'request': request}).data)
+            memberships = [m for m in memberships if m.can_post]
+        data = UserBriefSerializer([m.user for m in memberships], many=True, context={'request': request}).data
+        # Les rôles DANS le salon, pour l'écran des membres.
+        for ligne, m in zip(data, memberships):
+            ligne['is_moderator'] = m.is_moderator
+            ligne['par_audience'] = m.par_audience
+        return Response(data)
 
     @action(detail=True, methods=['post'], url_path='authors')
     def set_author(self, request, pk=None):
@@ -591,6 +658,36 @@ class ChatInvitationViewSet(viewsets.ModelViewSet):
             Q(sender=user) | Q(recipient=user)
         ).select_related('sender', 'recipient', 'chat').order_by('-created_at')
 
+    def create(self, request, *args, **kwargs):
+        if request.user.role == User.Role.ADMIN:
+            return self._ecrire_directement(request)
+        return super().create(request, *args, **kwargs)
+
+    @transaction.atomic
+    def _ecrire_directement(self, request):
+        """L'administration écrit à qui elle veut, sans demande à accepter
+        (décision du 2026-10-30). Rend le fil, existant ou neuf, à ouvrir."""
+        try:
+            recipient = User.objects.get(pk=request.data.get('recipient'), is_active=True)
+        except (User.DoesNotExist, ValueError, TypeError):
+            raise ValidationError("Utilisateur introuvable.")
+        if recipient.pk == request.user.pk:
+            raise ValidationError("On ne s'écrit pas à soi-même.")
+        chat = (
+            Chat.objects.filter(chat_type=Chat.ChatType.DIRECT, memberships__user=request.user)
+            .filter(memberships__user=recipient)
+            .first()
+        )
+        if not chat:
+            chat = Chat.objects.create(chat_type=Chat.ChatType.DIRECT, created_by=request.user)
+            ChatMembership.objects.create(chat=chat, user=request.user, added_by=request.user)
+            ChatMembership.objects.create(chat=chat, user=recipient, added_by=request.user)
+            note_systeme(chat, request.user, "Discussion directe démarrée.")
+        return Response(
+            {'direct': True, 'chat': ChatSerializer(chat, context={'request': request}).data},
+            status=status.HTTP_201_CREATED,
+        )
+
     def perform_create(self, serializer):
         recipient_id = self.request.data.get('recipient')
         if not recipient_id:
@@ -699,6 +796,15 @@ class UserPreferencesView(APIView):
         if 'visibility' in request.data and not config.allow_member_visibility_setting:
             raise PermissionDenied("La modification de visibilité est bloquée par l'administrateur.")
 
+        # L'administration reste joignable : ses comptes gardent visibilité et
+        # invitations ouvertes (décision du 2026-10-30).
+        if request.user.role == User.Role.ADMIN and (
+            request.data.get('visibility', UserMessagingPreferences.Visibility.ALL) != UserMessagingPreferences.Visibility.ALL
+            or request.data.get('allow_direct_invites') is False
+            or request.data.get('allow_group_invites') is False
+        ):
+            raise ValidationError("Un compte d'administration reste joignable : visibilité et invitations restent ouvertes.")
+
         serializer = UserMessagingPreferencesSerializer(prefs, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
@@ -707,8 +813,11 @@ class UserPreferencesView(APIView):
 
 class MemberSearchView(APIView):
     """
-    Permet de rechercher des membres du système pour démarrer une discussion directe,
-    en respectant le pilotage d'invitation et les préférences de visibilité des destinataires.
+    Recherche de membres pour un tête-à-tête ou, avec `?pour=salon`, pour un
+    salon. Le web et le mobile passent tous deux par ici depuis le 2026-10-30 :
+    le web choisissait les membres d'un salon dans l'annuaire, qui ne suivait
+    ni le pilotage ni les préférences, et ne montrait pas le même Kourel.
+    Qui est joignable : voir `services.joignables`.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -717,16 +826,7 @@ class MemberSearchView(APIView):
         if len(query) < 2:
             return Response([])
 
-        # Récupérer la configuration de pilotage du demandeur
-        config = get_effective_config(request.user)
-
-        # Les membres actifs. Les comptes d'administration restent hors de
-        # portée des membres — mais pas d'un autre administrateur : exclus
-        # pour tout le monde, deux admins ne se trouvaient jamais, ni pour
-        # un tête-à-tête ni pour un salon (constaté le 2026-10-30).
-        users_qs = User.objects.filter(is_active=True).exclude(id=request.user.id)
-        if request.user.role != User.Role.ADMIN:
-            users_qs = users_qs.exclude(role=User.Role.ADMIN)
+        users_qs = joignables(request.user, salon=request.query_params.get('pour') == 'salon')
 
         # ═══════════════════════════════════════════════════════════════════
         # La recherche porte sur le nom COMPLET, mot par mot
@@ -742,12 +842,16 @@ class MemberSearchView(APIView):
         # Chaque mot doit désormais toucher AU MOINS UN champ, et TOUS les
         # mots doivent toucher : « Papice » au prénom, « Cisse » au nom. Une
         # recherche à un seul mot se comporte exactement comme avant.
+        #
+        # Le Daara compte comme un champ : « Fatou Kande » départage deux
+        # Fatou, comme l'annuaire le permettait déjà.
         def filtre_mot(mot):
             f = (
                 Q(first_name__icontains=mot) |
                 Q(last_name__icontains=mot) |
                 Q(email__icontains=mot) |
-                Q(phone__icontains=mot)
+                Q(phone__icontains=mot) |
+                Q(daara__name__icontains=mot)
             )
             chiffres_mot = phone_digits(mot)
             if chiffres_mot:
@@ -768,26 +872,12 @@ class MemberSearchView(APIView):
         if chiffres:
             recherche |= Q(phone__icontains=chiffres)
 
-        users_qs = users_qs.filter(recherche)
-
-        user_daara = getattr(request.user, 'daara', None)
-
-        # Filtrer selon le pilotage de recherche hors-daara
-        if not config.allow_cross_daara_search and user_daara:
-            users_qs = users_qs.filter(daara=user_daara)
-
-        admissible_users = []
-
-        # Récupérer les préférences des candidats pour filtrage fin
-        # Pour optimiser, on select_related les préférences
-        users_qs = users_qs.select_related('messaging_preferences', 'daara')
-
-        for u in users_qs:
-            # Vérifier si l'utilisateur accepte d'être invité par request.user
-            if can_invite(request.user, u):
-                admissible_users.append(u)
-
-        return Response(UserBriefSerializer(admissible_users[:20], many=True, context={'request': request}).data)
+        trouves = (
+            users_qs.filter(recherche)
+            .select_related('daara', 'title')
+            .order_by('first_name', 'last_name', 'id')[:20]
+        )
+        return Response(UserBriefSerializer(trouves, many=True, context={'request': request}).data)
 
 
 class PilotageConfigView(APIView):

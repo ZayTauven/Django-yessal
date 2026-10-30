@@ -101,6 +101,9 @@ class ChatMembership(models.Model):
     # Ajouté PAR L'AUDIENCE du fil : la synchronisation peut le retirer quand
     # il n'en fait plus partie. Un ajout à la main (False) n'est jamais retiré.
     par_audience = models.BooleanField(default=False)
+    # Dans un salon : ajoute, retire et nomme d'autres modérateurs. Le
+    # créateur l'est d'office (décision du 2026-10-30). Sans effet ailleurs.
+    is_moderator = models.BooleanField(default=False)
 
     class Meta:
         unique_together = ('chat', 'user')

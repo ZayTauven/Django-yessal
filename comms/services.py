@@ -185,6 +185,15 @@ def get_effective_config(user):
     """
     from .models import MessagingPilotageConfig
 
+    # L'administration n'est jamais bornée par le pilotage : il règle les
+    # échanges des membres. Un admin rattaché à un Daara dont le pilotage
+    # ferme la recherche hors Daara ne trouvait plus personne ailleurs —
+    # et un admin sans Daara, plus personne du tout (constaté le 2026-10-30).
+    from django.contrib.auth import get_user_model
+
+    if getattr(user, 'role', None) == get_user_model().Role.ADMIN:
+        return MessagingPilotageConfig()
+
     daara = getattr(user, 'daara', None)
     if daara:
         config = MessagingPilotageConfig.objects.filter(daara=daara).first()
@@ -198,44 +207,79 @@ def get_effective_config(user):
     # Fallback si aucun objet n'existe du tout
     return MessagingPilotageConfig()
 
-def can_invite(sender, recipient):
+def joignables(sender, salon=False):
+    """Les comptes que `sender` peut trouver et inviter — en UNE requête.
+
+    `salon=False` : pour un tête-à-tête ; `salon=True` : pour un salon. Seule
+    la préférence consultée change (`allow_direct_invites` ou
+    `allow_group_invites`), et le salon ne dépend pas de `allow_member_invite`,
+    qui ne règle que les demandes directes.
+
+    Règles du 2026-10-30 :
+    - un administrateur joint tout le Kourel, admins compris, sans pilotage
+      ni préférence — il écrit à qui il veut, il ajoute qui il veut ;
+    - les autres ne trouvent jamais un compte d'administration ;
+    - pour eux, pilotage puis préférences de chaque destinataire.
+
+    Remplace une boucle qui appelait `can_invite` candidat par candidat, avec
+    deux à trois requêtes chacun : un nom courant comme « Diop » coûtait des
+    centaines de requêtes. Un compte sans ligne de préférences garde les
+    valeurs par défaut, sans qu'on la crée au passage.
     """
-    Détermine si sender peut inviter recipient à discuter (ou démarrer un chat).
-    Vérifie les configurations de pilotage ainsi que les préférences de visibilité et d'invitations du destinataire.
-    """
-    from .models import UserMessagingPreferences, MessagingPilotageConfig
+    from django.contrib.auth import get_user_model
+    from django.db.models import Q
+    from .canaux import EMAIL_SYSTEME
+    from .models import UserMessagingPreferences
 
-    # Si c'est l'utilisateur lui-même, on refuse d'auto-inviter
-    if sender == recipient:
-        return False
+    User = get_user_model()
+    qs = User.objects.filter(is_active=True).exclude(pk=sender.pk).exclude(email=EMAIL_SYSTEME)
+    if sender.role == User.Role.ADMIN:
+        return qs
+    qs = qs.exclude(role=User.Role.ADMIN)
 
-    prefs, _ = UserMessagingPreferences.objects.get_or_create(user=recipient)
-
-    # 1. Vérification des préférences individuelles du destinataire
-    if not prefs.allow_direct_invites:
-        return False
-
-    if prefs.visibility == UserMessagingPreferences.Visibility.NOBODY:
-        return False
-
-    sender_daara = getattr(sender, 'daara', None)
-    recipient_daara = getattr(recipient, 'daara', None)
-    same_daara = (sender_daara is not None and sender_daara == recipient_daara)
-
-    if prefs.visibility == UserMessagingPreferences.Visibility.DAARA_ONLY and not same_daara:
-        return False
-
-    # 2. Vérification de la configuration de pilotage en cascade
-    # Priorité au pilotage de la Daara du sender
     config = get_effective_config(sender)
+    if not salon and not config.allow_member_invite:
+        return qs.none()
+    daara_id = sender.daara_id
+    if not config.allow_cross_daara_search:
+        if not daara_id:
+            return qs.none()
+        qs = qs.filter(daara_id=daara_id)
 
-    if not config.allow_member_invite:
+    # Sans ligne de préférences, ce sont les valeurs par défaut : tout ouvert.
+    Vis = UserMessagingPreferences.Visibility
+    accepte = 'messaging_preferences__allow_group_invites' if salon else 'messaging_preferences__allow_direct_invites'
+    visible = ~Q(messaging_preferences__visibility=Vis.NOBODY)
+    if daara_id:
+        visible &= ~Q(messaging_preferences__visibility=Vis.DAARA_ONLY) | Q(daara_id=daara_id)
+    else:
+        visible &= ~Q(messaging_preferences__visibility=Vis.DAARA_ONLY)
+    return qs.filter(Q(messaging_preferences__isnull=True) | (Q(**{accepte: True}) & visible))
+
+
+def can_invite(sender, recipient, salon=False):
+    """`sender` peut-il inviter `recipient` ? Mêmes règles que `joignables`."""
+    return joignables(sender, salon=salon).filter(pk=recipient.pk).exists()
+
+
+def peut_moderer(user, chat, membership=None):
+    """Ajouter, retirer, nommer un modérateur dans ce salon ?
+
+    L'administration partout ; le coordinateur dans les salons de SON Daara ;
+    sinon les modérateurs du salon — le créateur d'office. Jamais dans un
+    fil archivé : il est en lecture seule.
+    """
+    from django.contrib.auth import get_user_model
+    from .models import Chat
+
+    Role = get_user_model().Role
+    if chat.chat_type != Chat.ChatType.GROUP or chat.archived_at:
         return False
-
-    if not same_daara and not config.allow_cross_daara_search:
-        return False
-
-    return True
+    if user.role == Role.ADMIN:
+        return True
+    if user.role == Role.CHEF_DAARA and chat.daara_id and chat.daara_id == user.daara_id:
+        return True
+    return bool(membership and membership.is_moderator)
 
 
 def note_systeme(chat, auteur, texte):

@@ -33,7 +33,9 @@ class NotificationSerializer(serializers.ModelSerializer):
 class UserBriefSerializer(serializers.ModelSerializer):
     name = serializers.SerializerMethodField()
     avatar = serializers.SerializerMethodField()
-    daara_name = serializers.CharField(source='daara.name', read_only=True)
+    # `default=None` : sans Daara, la clé disparaissait de la réponse au lieu
+    # de valoir `null`.
+    daara_name = serializers.CharField(source='daara.name', read_only=True, default=None)
     # Le titre du membre (AMIR, DIEUWRIGNE…), affiché en étiquette à côté de
     # son nom dans les fils et les listes de membres.
     title = serializers.CharField(source='title.name', read_only=True, default=None)
@@ -250,6 +252,7 @@ class ChatSerializer(serializers.ModelSerializer):
     last_activity_at = serializers.SerializerMethodField()
     created_by = serializers.PrimaryKeyRelatedField(read_only=True)
     can_post = serializers.SerializerMethodField()
+    can_moderate = serializers.SerializerMethodField()
     pinned_message = serializers.SerializerMethodField()
     is_system = serializers.SerializerMethodField()
 
@@ -260,9 +263,18 @@ class ChatSerializer(serializers.ModelSerializer):
             'unread_count', 'members_count', 'is_muted', 'peer_id',
             'peer_last_read_at', 'last_activity_at', 'daara', 'campaign',
             'created_by', 'created_at', 'channel_kind', 'description', 'can_post',
-            'audience', 'push_enabled', 'show_amounts', 'icon', 'archived_at',
-            'pinned_message', 'is_system',
+            'can_moderate', 'audience', 'push_enabled', 'show_amounts', 'icon',
+            'archived_at', 'pinned_message', 'is_system',
         ]
+
+    def get_can_moderate(self, obj):
+        """Les gestes de modération du salon (ajouter, retirer, nommer)."""
+        from .services import peut_moderer
+
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return False
+        return peut_moderer(request.user, obj, self._my_membership(obj))
 
     def get_is_system(self, obj):
         """Un canal fondateur (Sangue Bi, Jëfs) : ni archivé, ni ciblé."""
@@ -490,6 +502,10 @@ class CreateGroupChatSerializer(serializers.ModelSerializer):
                 raise PermissionDenied("Seule l'administration crée un salon par titre.")
             validated_data['audience'] = normaliser({'titles': title_ids})
         validated_data['chat_type'] = Chat.ChatType.GROUP
+        # Le créateur n'était pas enregistré : `created_by` restait vide, et le
+        # droit « créateur du salon » ne s'appliquait jamais.
+        if request and request.user.is_authenticated:
+            validated_data['created_by'] = request.user
         if daara_id:
             validated_data['daara_id'] = daara_id
         if campaign_id:
@@ -514,9 +530,9 @@ class CreateGroupChatSerializer(serializers.ModelSerializer):
         elif invite_mode == 'global_collectors':
             member_ids.update(scoped_users.filter(role=User.Role.COLLECTOR).values_list('id', flat=True))
 
-        # Le créateur est toujours membre
+        # Le créateur est toujours membre, et modérateur d'office.
         if request and request.user:
-            ChatMembership.objects.create(chat=chat, user=request.user, added_by=request.user)
+            ChatMembership.objects.create(chat=chat, user=request.user, added_by=request.user, is_moderator=True)
 
         if chat.audience:
             from .audience import synchroniser

@@ -22,9 +22,10 @@ def creer(email, **extra):
 
 
 def salon(*membres, chat_type=Chat.ChatType.GROUP, name='Salon'):
+    """Le premier membre crée le salon — et en est modérateur, comme en vrai."""
     chat = Chat.objects.create(chat_type=chat_type, name=name, created_by=membres[0])
     for m in membres:
-        ChatMembership.objects.create(chat=chat, user=m, added_by=membres[0])
+        ChatMembership.objects.create(chat=chat, user=m, added_by=membres[0], is_moderator=m == membres[0])
     return chat
 
 
@@ -208,7 +209,7 @@ class SalonTests(SansReseau):
     def test_le_coordinateur_ajoute(self):
         self.client.force_authenticate(self.chef)
         r = self.client.post(f'/api/comms/{self.chat.id}/add-members/', {'user_ids': [self.modou.id]}, format='json')
-        self.assertEqual(r.json(), {'added': 1})
+        self.assertEqual(r.json(), {'added': 1, 'refused': 0})
         self.assertTrue(ChatMembership.objects.filter(chat=self.chat, user=self.modou).exists())
 
     def test_la_sourdine_se_lit_dans_la_liste(self):
@@ -219,46 +220,174 @@ class SalonTests(SansReseau):
         self.assertTrue(rows[0]['is_muted'])
 
 
-class AdminsEntreEuxTests(SansReseau):
-    """Deux administrateurs ne se trouvaient pas : la recherche et l'annuaire
-    écartaient tout compte admin, quel que soit celui qui cherchait."""
+class RechercheTests(SansReseau):
+    """Qui l'on trouve (arbitrages du 2026-10-30) : l'admin trouve tout le
+    Kourel, admins compris, sans pilotage ni préférence ; un membre ne trouve
+    jamais un admin, et pour lui pilotage et préférences s'appliquent."""
 
     def setUp(self):
         super().setUp()
-        self.fatou = creer('fatou@ex.org', first_name='Fatou', last_name='Diop', role=User.Role.ADMIN)
+        from accounts.models import LDD, Daara
+        ldd = LDD.objects.create(code='DS C', name='Casamance')
+        self.kande = Daara.objects.create(name='Kandé', ldd=ldd)
+        self.police = Daara.objects.create(name='Police', ldd=ldd)
+        self.fatou = creer('fatou@ex.org', first_name='Fatou', last_name='Diop', role=User.Role.ADMIN, daara=self.kande)
         self.ibou = creer('ibou@ex.org', first_name='Ibou', last_name='Diop', role=User.Role.ADMIN)
         self.guide = creer('guide@ex.org', first_name='Sokhna', last_name='Diop', role=User.Role.GUIDE)
-        self.awa = creer('awa@ex.org', first_name='Awa', last_name='Diop')
+        self.awa = creer('awa@ex.org', first_name='Awa', last_name='Diop', daara=self.kande)
+        self.modou = creer('modou@ex.org', first_name='Modou', last_name='Diop', daara=self.police)
 
-    def ids_trouves(self, qui, q='Diop'):
+    def ids_trouves(self, qui, q='Diop', **params):
         self.client.force_authenticate(qui)
-        return {u['id'] for u in self.client.get('/api/comms/search-members/', {'q': q}).json()}
+        return {u['id'] for u in self.client.get('/api/comms/search-members/', {'q': q, **params}).json()}
+
+    def fermer_hors_daara(self):
+        from comms.models import MessagingPilotageConfig
+        MessagingPilotageConfig.objects.create(daara=None, allow_cross_daara_search=False)
+        MessagingPilotageConfig.objects.create(daara=self.kande, allow_cross_daara_search=False)
 
     def test_un_admin_trouve_un_autre_admin(self):
-        self.assertEqual(self.ids_trouves(self.fatou), {self.ibou.id, self.guide.id, self.awa.id})
+        self.assertEqual(self.ids_trouves(self.fatou), {self.ibou.id, self.guide.id, self.awa.id, self.modou.id})
 
     def test_un_membre_ne_trouve_toujours_pas_les_admins(self):
-        self.assertEqual(self.ids_trouves(self.awa), {self.guide.id})
+        self.assertEqual(self.ids_trouves(self.awa), {self.guide.id, self.modou.id})
 
-    def test_l_annuaire_de_la_messagerie_porte_admins_et_guide(self):
+    def test_le_pilotage_ne_borne_pas_un_admin(self):
+        self.fermer_hors_daara()
+        # Fatou est rattachée à Kandé, Ibou à aucun Daara : tous deux trouvent Modou, de Police.
+        self.assertIn(self.modou.id, self.ids_trouves(self.fatou))
+        self.assertIn(self.modou.id, self.ids_trouves(self.ibou))
+        # Le membre, lui, reste dans son Daara.
+        self.assertEqual(self.ids_trouves(self.awa), set())
+
+    def test_les_preferences_ne_bornent_pas_un_admin(self):
+        UserMessagingPreferences.objects.update_or_create(user=self.modou, defaults={'visibility': 'nobody', 'allow_direct_invites': False})
+        self.assertIn(self.modou.id, self.ids_trouves(self.fatou))
+        self.assertNotIn(self.modou.id, self.ids_trouves(self.awa))
+
+    def test_pour_un_salon_c_est_la_preference_des_salons_qui_compte(self):
+        UserMessagingPreferences.objects.update_or_create(user=self.modou, defaults={'allow_direct_invites': False})
+        self.assertNotIn(self.modou.id, self.ids_trouves(self.awa))
+        self.assertIn(self.modou.id, self.ids_trouves(self.awa, pour='salon'))
+
+    def test_le_daara_departage_deux_homonymes(self):
+        self.assertEqual(self.ids_trouves(self.guide, q='Diop Police'), {self.modou.id})
+
+    def test_un_compte_sans_preferences_reste_joignable(self):
+        # Les comptes anciens n'ont pas toujours leur ligne : valeurs par défaut.
+        UserMessagingPreferences.objects.filter(user=self.modou).delete()
+        self.assertIn(self.modou.id, self.ids_trouves(self.awa))
+        self.assertFalse(UserMessagingPreferences.objects.filter(user=self.modou).exists())
+
+    def test_un_nom_courant_coute_autant_qu_un_nom_rare(self):
+        for i in range(30):
+            creer(f'diop{i}@ex.org', first_name=f'Membre{i}', last_name='Diop', daara=self.police)
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        self.client.force_authenticate(self.awa)
+        # Pilotage (Daara puis global) et la recherche elle-même : rien par
+        # candidat. L'ancienne boucle en faisait plus de soixante ici.
+        with CaptureQueriesContext(connection) as requetes:
+            r = self.client.get('/api/comms/search-members/', {'q': 'Diop'})
+        self.assertEqual(len(r.json()), 20)
+        self.assertLessEqual(len(requetes), 5)
+
+    def test_un_admin_ecrit_directement_sans_demande(self):
         self.client.force_authenticate(self.fatou)
-        ids = {u['id'] for u in self.client.get('/api/directory/users/', {'messagerie': '1'}).json()}
-        self.assertTrue({self.ibou.id, self.guide.id, self.awa.id} <= ids)
-        # Sans le paramètre, l'annuaire reste celui de la communauté.
-        ids = {u['id'] for u in self.client.get('/api/directory/users/').json()}
-        self.assertEqual(ids, {self.awa.id})
+        r = self.client.post('/api/comms/invitations/', {'recipient': self.modou.id}, format='json')
+        self.assertEqual(r.status_code, 201)
+        chat_id = r.json()['chat']['id']
+        self.assertEqual(set(Chat.objects.get(pk=chat_id).memberships.values_list('user_id', flat=True)),
+                         {self.fatou.id, self.modou.id})
+        # Une deuxième fois, le même fil revient.
+        r = self.client.post('/api/comms/invitations/', {'recipient': self.modou.id}, format='json')
+        self.assertEqual(r.json()['chat']['id'], chat_id)
 
-    def test_un_coordinateur_n_obtient_pas_les_admins_par_le_parametre(self):
-        chef = creer('chef@ex.org', role=User.Role.CHEF_DAARA)
-        self.client.force_authenticate(chef)
-        ids = {u['id'] for u in self.client.get('/api/directory/users/', {'messagerie': '1'}).json()}
-        self.assertNotIn(self.ibou.id, ids)
+    def test_un_membre_ne_peut_pas_inviter_un_admin(self):
+        self.client.force_authenticate(self.awa)
+        r = self.client.post('/api/comms/invitations/', {'recipient': self.ibou.id}, format='json')
+        self.assertEqual(r.status_code, 403)
+
+    def test_un_admin_garde_ses_preferences_ouvertes(self):
+        self.client.force_authenticate(self.fatou)
+        r = self.client.patch('/api/comms/preferences/', {'visibility': 'nobody'}, format='json')
+        self.assertEqual(r.status_code, 400)
+        r = self.client.patch('/api/comms/preferences/', {'notifications_enabled': False}, format='json')
+        self.assertEqual(r.status_code, 200)
+
+
+class ModerationTests(SansReseau):
+    """Le modérateur de salon — le créateur d'office (2026-10-30)."""
+
+    def setUp(self):
+        super().setUp()
+        self.admin = creer('admin@ex.org', first_name='Admin', role=User.Role.ADMIN)
+        self.awa = creer('awa@ex.org', first_name='Awa')
+        self.modou = creer('modou@ex.org', first_name='Modou')
+        self.binta = creer('binta@ex.org', first_name='Binta')
+        # L'admin est dans le salon : on ne modère que les fils où l'on est.
+        self.chat = salon(self.awa, self.modou, self.admin)
+
+    def post(self, qui, geste, **corps):
+        self.client.force_authenticate(qui)
+        return self.client.post(f'/api/comms/{self.chat.id}/{geste}/', corps, format='json')
+
+    def membres(self):
+        return set(self.chat.memberships.values_list('user_id', flat=True))
+
+    def test_la_creation_fait_du_createur_un_moderateur(self):
+        self.client.force_authenticate(self.awa)
+        r = self.client.post('/api/comms/', {'name': 'Magal', 'member_ids': [self.modou.id]}, format='json')
+        self.assertTrue(r.json()['can_moderate'])
+        self.assertEqual(r.json()['created_by'], self.awa.id)
+        self.assertTrue(ChatMembership.objects.get(chat_id=r.json()['id'], user=self.awa).is_moderator)
+
+    def test_le_moderateur_ajoute_et_retire(self):
+        self.assertEqual(self.post(self.awa, 'add-members', user_ids=[self.binta.id]).json(), {'added': 1, 'refused': 0})
+        self.assertEqual(self.post(self.awa, 'remove-member', user_id=self.binta.id).status_code, 200)
+        self.assertEqual(self.membres(), {self.awa.id, self.modou.id, self.admin.id})
+        self.assertTrue(self.chat.messages.filter(message_type='system', content__contains='a retiré').exists())
+
+    def test_un_simple_membre_ne_modere_pas(self):
+        self.assertEqual(self.post(self.modou, 'add-members', user_ids=[self.binta.id]).status_code, 403)
+        self.assertEqual(self.post(self.modou, 'remove-member', user_id=self.awa.id).status_code, 403)
+
+    def test_un_moderateur_nomme_un_autre_moderateur(self):
+        self.post(self.awa, 'moderators', user_id=self.modou.id, is_moderator=True)
+        self.assertEqual(self.post(self.modou, 'add-members', user_ids=[self.binta.id]).json()['added'], 1)
+
+    def test_un_moderateur_ne_retire_pas_un_autre_moderateur(self):
+        self.post(self.awa, 'moderators', user_id=self.modou.id, is_moderator=True)
+        self.assertEqual(self.post(self.modou, 'remove-member', user_id=self.awa.id).status_code, 403)
+        # L'administration, si.
+        self.assertEqual(self.post(self.admin, 'remove-member', user_id=self.awa.id).status_code, 200)
+
+    def test_on_ne_se_retire_ni_ne_se_decharge_soi_meme(self):
+        self.assertEqual(self.post(self.awa, 'remove-member', user_id=self.awa.id).status_code, 400)
+        self.assertEqual(self.post(self.awa, 'moderators', user_id=self.awa.id, is_moderator=False).status_code, 400)
+
+    def test_un_membre_entre_par_son_titre_ne_se_retire_pas_a_la_main(self):
+        self.chat.audience = {'titles': [1]}
+        self.chat.save(update_fields=['audience'])
+        ChatMembership.objects.create(chat=self.chat, user=self.binta, par_audience=True)
+        self.assertEqual(self.post(self.admin, 'remove-member', user_id=self.binta.id).status_code, 400)
+
+    def test_l_ajout_suit_les_preferences_du_moderateur(self):
+        UserMessagingPreferences.objects.update_or_create(user=self.binta, defaults={'allow_group_invites': False})
+        self.assertEqual(self.post(self.awa, 'add-members', user_ids=[self.binta.id]).json(), {'added': 0, 'refused': 1})
+        # L'administration ajoute qui elle veut.
+        self.assertEqual(self.post(self.admin, 'add-members', user_ids=[self.binta.id]).json()['added'], 1)
+
+    def test_les_membres_portent_leur_role_dans_le_salon(self):
+        self.client.force_authenticate(self.modou)
+        rows = {m['id']: m for m in self.client.get(f'/api/comms/{self.chat.id}/members/').json()}
+        self.assertTrue(rows[self.awa.id]['is_moderator'])
+        self.assertFalse(rows[self.modou.id]['is_moderator'])
 
     def test_un_admin_ajoute_un_autre_admin_a_un_salon(self):
-        chat = salon(self.fatou, self.awa)
-        self.client.force_authenticate(self.fatou)
-        r = self.client.post(f'/api/comms/{chat.id}/add-members/', {'user_ids': [self.ibou.id]}, format='json')
-        self.assertEqual(r.json(), {'added': 1})
+        autre = creer('admin2@ex.org', role=User.Role.ADMIN)
+        self.assertEqual(self.post(self.admin, 'add-members', user_ids=[autre.id]).json()['added'], 1)
 
 
 class TempsReelTests(SansReseau):
