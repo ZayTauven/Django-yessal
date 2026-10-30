@@ -273,6 +273,20 @@ class RemiseTests(CircuitEspecesBase):
         # Une remise ne se rejoue pas.
         self.assertEqual(self.remettre([a], 10000).status_code, 400)
 
+    def test_la_remise_publie_les_jefs_dans_le_canal(self):
+        """Régression du 2026-10-30 : la remise confirme par `update()`, sans
+        `post_save` ; aucun Jëf en espèces n'arrivait dans « Les Jëfs du Kourel »."""
+        from comms.canaux import canal
+        from comms.models import Message
+
+        a, b = self.encaisse(10000), self.encaisse(5000)
+        with self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(self.remettre([a, b], '15000').status_code, 201)
+        cartes = Message.objects.filter(chat=canal('jefs'), message_type=Message.MessageType.CARD)
+        self.assertEqual(sorted(cartes.values_list('payload__donation_id', flat=True)), [a.pk, b.pk])
+        # Jamais le montant.
+        self.assertFalse(any('10' in c.content and 'FCFA' in c.content for c in cartes))
+
     def test_on_ne_valide_pas_sa_propre_remise(self):
         jef = self.encaisse(10000, collecteur=self.admin)
         r = self.remettre([jef], 10000, auteur=self.admin, collecteur=self.admin)

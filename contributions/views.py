@@ -702,6 +702,16 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
                 updated_at=maintenant,
             )
 
+        # Les Jëfs d'une remise passent à « confirmé » par un `update()`, qui ne
+        # déclenche aucun `post_save` : le signal `publier_dans_le_canal` ne les
+        # voyait jamais, et aucune carte ne partait dans « Les Jëfs du Kourel »
+        # pour un Jëf en espèces — le cas le plus courant (constaté sur la démo
+        # le 2026-10-30 : zéro carte). Dans l'ordre des Jëfs, pour que chacun
+        # garde son rang ; `publier_jef` est idempotent et ne lève jamais.
+        from comms.canaux import publier_jef
+        for d in Donation.objects.filter(pk__in=ids).select_related('donor', 'campaign').order_by('pk'):
+            publier_jef(d)
+
         reference = f"Remise n°{remise.pk}"
         for d in Donation.objects.filter(pk__in=ids).select_related('donor', 'campaign'):
             notify(
