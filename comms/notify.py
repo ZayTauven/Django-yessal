@@ -114,7 +114,9 @@ def administrateurs():
     nommé ce matin doit recevoir les demandes de cet après-midi.
     """
     User = get_user_model()
-    return list(User.objects.filter(role=User.Role.ADMIN, is_active=True))
+    # `status`, pas `is_active` : rien ne passe jamais `is_active` à False, un
+    # administrateur bloqué restait destinataire de tout.
+    return list(User.objects.filter(role=User.Role.ADMIN, status=User.Status.ACTIVE))
 
 
 def nom_de(user) -> str:

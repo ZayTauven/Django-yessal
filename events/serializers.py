@@ -76,6 +76,14 @@ class CampaignTodoSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ['created_at', 'updated_at']
 
+    def validate_campaign(self, value):
+        # Une tâche ne change pas de Ndiguel : le droit de la modifier se juge
+        # sur son Ndiguel d'origine, et un PATCH `campaign` la déposait dans le
+        # plan de travail d'un Ndiguel que son auteur ne gère pas.
+        if self.instance is not None and value != self.instance.campaign:
+            raise serializers.ValidationError("Une tâche ne change pas de Ndiguel.")
+        return value
+
 
 class CampaignSerializer(serializers.ModelSerializer):
     collected_amount = serializers.SerializerMethodField()

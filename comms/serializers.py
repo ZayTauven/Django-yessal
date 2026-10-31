@@ -528,7 +528,7 @@ class CreateGroupChatSerializer(serializers.ModelSerializer):
         chat = Chat.objects.create(**validated_data)
 
         target_daara_id = preset_daara_id or daara_id or getattr(getattr(request, 'user', None), 'daara_id', None)
-        scoped_users = User.objects.filter(is_active=True).exclude(role=User.Role.ADMIN)
+        scoped_users = User.objects.filter(status=User.Status.ACTIVE).exclude(role=User.Role.ADMIN)
 
         if invite_mode in {'daara_all', 'daara_members', 'daara_collectors', 'daara_chefs'} and target_daara_id:
             scoped_users = scoped_users.filter(daara_id=target_daara_id)

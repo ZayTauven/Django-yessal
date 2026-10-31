@@ -862,9 +862,25 @@ class UserDocumentViewSet(viewsets.ModelViewSet):
         self._notify_admins_document_submission(doc)
 
     def perform_update(self, serializer):
-        doc = serializer.save()
-        if self.request.user.role != User.Role.ADMIN and not self.request.user.is_staff:
-            self._notify_admins_document_submission(doc)
+        if self.request.user.role == User.Role.ADMIN or self.request.user.is_staff:
+            serializer.save()
+            return
+        # ═══════════════════════════════════════════════════════════════════
+        # Une pièce corrigée par son titulaire repasse « en attente »
+        # ═══════════════════════════════════════════════════════════════════
+        # Le statut restait celui d'avant : une pièce VALIDÉE dont le membre
+        # changeait le numéro ou la photo restait validée — la validation
+        # portait sur un document que personne n'avait vu. À l'inverse, une
+        # pièce REFUSÉE puis corrigée restait refusée, et la file de l'admin
+        # (`status=pending`) ne la montrait jamais : le membre attendait une
+        # réponse qui ne pouvait pas venir.
+        doc = serializer.save(
+            status=UserDocument.ValidationStatus.PENDING,
+            validated_by=None,
+            validated_at=None,
+            rejection_note='',
+        )
+        self._notify_admins_document_submission(doc)
 
     def _notify_admins_document_submission(self, doc: UserDocument):
         """Prévient les administrateurs, et accuse réception au déposant."""

@@ -29,11 +29,14 @@ class Base(APITestCase):
         self.addCleanup(mock.patch.stopall)
 
         self.daara = Daara.objects.create(name='Police', ldd=LDD.objects.create(code='SEN', name='Sénégal'))
+        # Comptes validés : un compte « en attente » ne reçoit aucun push.
+        actif = User.Status.ACTIVE
         self.awa = User.objects.create_user(
             email='awa@ex.org', password='x', first_name='Awa', last_name='Ndiaye', daara=self.daara,
+            status=actif,
         )
-        self.modou = User.objects.create_user(email='modou@ex.org', password='x', first_name='Modou')
-        self.admin = User.objects.create_user(email='admin@ex.org', password='x', role=User.Role.ADMIN)
+        self.modou = User.objects.create_user(email='modou@ex.org', password='x', first_name='Modou', status=actif)
+        self.admin = User.objects.create_user(email='admin@ex.org', password='x', role=User.Role.ADMIN, status=actif)
         fete = Fete.objects.create(name='Magal', date=timezone.now().date(), recurrence=Fete.Recurrence.ANNUAL)
         self.ndiguel = Campaign.objects.create(
             name='Magal 18 Safar', status=Campaign.Status.ACTIVE, deadline=timezone.now().date(),

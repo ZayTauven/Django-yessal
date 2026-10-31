@@ -29,6 +29,9 @@ class CustomUserManager(BaseUserManager):
         extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
         extra_fields.setdefault('is_active', True)
+        # Sans statut, il naissait « en attente » : la connexion de l'API, qui
+        # exige `active`, refusait l'administrateur qu'on venait de créer.
+        extra_fields.setdefault('status', self.model.Status.ACTIVE)
         # Le rôle dit la même chose que les drapeaux (voir `User.save`) :
         # sans lui, le superutilisateur naissait « membre » avec is_staff.
         extra_fields.setdefault('role', self.model.Role.ADMIN)

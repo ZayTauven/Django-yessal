@@ -47,7 +47,7 @@ def notify_for_collector_payment(sender, instance, created, **kwargs):
         if daara:
             recipients.update(User.objects.filter(role='chef_daara', daara=daara))
         if not de_zone:
-            recipients.update(User.objects.filter(role='admin', is_active=True))
+            recipients.update(User.objects.filter(role='admin', status=User.Status.ACTIVE))
 
         from .views import montant_lisible
 

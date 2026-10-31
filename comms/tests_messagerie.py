@@ -18,6 +18,8 @@ User = get_user_model()
 
 
 def creer(email, **extra):
+    # Compte validé par défaut : une inscription en attente n'est pas joignable.
+    extra.setdefault('status', User.Status.ACTIVE)
     return User.objects.create_user(email=email, password='x', **extra)
 
 

@@ -79,8 +79,13 @@ class IsCampaignOrganizer(permissions.BasePermission):
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
             return False
-        # La création est restreinte aux rôles de la confrérie
-        if view.action == 'create':
+        # Lancer un NDIGUEL : l'administration seule (UC-06). Ce contrôle
+        # valait aussi pour les TÂCHES, qui partagent cette permission : depuis
+        # que la liste s'est réduite à l'admin, ni l'organisateur ni le
+        # coordinateur ne pouvaient plus en ajouter (403, « Erreur lors de
+        # l'ajout de la tâche »). La création d'une tâche se juge sur le
+        # Ndiguel visé, dans `CampaignTodoViewSet.perform_create`.
+        if view.action == 'create' and isinstance(view, CampaignViewSet):
             return getattr(request.user, 'role', None) in CAMPAIGN_CREATOR_ROLES
         return True
 
@@ -150,7 +155,7 @@ class FeteViewSet(viewsets.ModelViewSet):
         # `only('id')` ne suffit plus : l'envoi a besoin de l'adresse et du
         # prénom. Deux colonnes de plus valent mieux qu'une requête par membre.
         targets = list(
-            User.objects.filter(is_active=True, role__in=target_roles)
+            User.objects.filter(status=User.Status.ACTIVE, role__in=target_roles)
             .only('id', 'email', 'first_name')
         )
         formatted_date = prochaine_date.strftime('%d/%m/%Y')

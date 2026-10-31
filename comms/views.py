@@ -1,7 +1,7 @@
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from datetime import datetime, timezone as dt_timezone
-from django.db.models import Count, F, OuterRef, Prefetch, Q, Subquery, Value
+from django.db.models import Count, Exists, F, OuterRef, Prefetch, Q, Subquery, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
@@ -117,6 +117,14 @@ class ChatViewSet(viewsets.ModelViewSet):
         memberships_qs = ChatMembership.objects.select_related('user', 'user__daara', 'user__title')
 
         fils = Chat.objects.filter(id__in=chat_ids)
+        if user.role == User.Role.ADMIN:
+            # Un salon que tous ses membres ont quitté n'appartenait plus à
+            # personne : invisible de tous, l'administration comprise, il ne
+            # pouvait plus être ni archivé ni retrouvé. Elle les voit.
+            fils = Chat.objects.filter(
+                Q(id__in=chat_ids)
+                | (Q(chat_type=Chat.ChatType.GROUP) & ~Exists(ChatMembership.objects.filter(chat=OuterRef('pk'))))
+            )
         # Un fil archivé sort des listes ; ses écrans de gestion (détail,
         # réglages, réactivation) le trouvent toujours. L'administration le
         # retrouve dans la liste avec `?archives=1`.
@@ -252,8 +260,24 @@ class ChatViewSet(viewsets.ModelViewSet):
         if chat.chat_type == Chat.ChatType.CHANNEL:
             raise ValidationError("Un canal du Kourel ne se quitte pas ; mettez-le en sourdine.")
         deleted, _ = ChatMembership.objects.filter(chat=chat, user=request.user).delete()
-        if deleted:
-            note_systeme(chat, request.user, f"{nom_de(request.user)} a quitté le salon.")
+        if not deleted:
+            return Response({'success': True})
+        note_systeme(chat, request.user, f"{nom_de(request.user)} a quitté le salon.")
+
+        restants = ChatMembership.objects.filter(chat=chat).select_related('user').order_by('joined_at', 'pk')
+        if not restants.exists():
+            # Le dernier parti, le salon n'a plus de lecteur : il est archivé,
+            # historique conservé. Il restait sinon un fil fantôme, invisible
+            # de tous et impossible à gérer.
+            chat.archived_at = timezone.now()
+            chat.save(update_fields=['archived_at'])
+        elif not restants.filter(is_moderator=True).exists():
+            # Plus aucun modérateur : le plus ancien membre prend la relève,
+            # faute de quoi personne ne pourrait plus ajouter ni retirer.
+            releve = restants.first()
+            releve.is_moderator = True
+            releve.save(update_fields=['is_moderator'])
+            note_systeme(chat, request.user, f"{nom_de(releve.user)} devient modérateur du salon.")
         return Response({'success': True})
 
     @action(detail=True, methods=['post'], url_path='add-members')
@@ -688,7 +712,7 @@ class ChatInvitationViewSet(viewsets.ModelViewSet):
         """L'administration écrit à qui elle veut, sans demande à accepter
         (décision du 2026-10-30). Rend le fil, existant ou neuf, à ouvrir."""
         try:
-            recipient = User.objects.get(pk=request.data.get('recipient'), is_active=True)
+            recipient = User.objects.get(pk=request.data.get('recipient'), status=User.Status.ACTIVE)
         except (User.DoesNotExist, ValueError, TypeError):
             raise ValidationError("Utilisateur introuvable.")
         if recipient.pk == request.user.pk:
@@ -741,6 +765,13 @@ class ChatInvitationViewSet(viewsets.ModelViewSet):
         )
         if invitations.exists():
             raise ValidationError("Une invitation est déjà en attente pour ce membre.")
+        # Dans l'autre sens aussi : deux invitations croisées, acceptées
+        # chacune de son côté, ouvraient deux tête-à-tête entre les mêmes
+        # personnes — deux fils, deux historiques, des messages éparpillés.
+        if ChatInvitation.objects.filter(
+            sender=recipient, recipient=self.request.user, status=ChatInvitation.Status.PENDING,
+        ).exists():
+            raise ValidationError("Ce membre vous a déjà invité : acceptez son invitation.")
 
         invitation = serializer.save(sender=self.request.user, recipient=recipient)
 
@@ -767,20 +798,28 @@ class ChatInvitationViewSet(viewsets.ModelViewSet):
         invitation.status = ChatInvitation.Status.ACCEPTED
         invitation.save()
 
-        # Créer le Chat DIRECT
-        chat = Chat.objects.create(
-            chat_type=Chat.ChatType.DIRECT,
-            created_by=invitation.sender
+        # Un tête-à-tête existe peut-être déjà — ouvert par l'administration,
+        # ou par une invitation croisée acceptée avant celle-ci : on le
+        # rouvre au lieu d'en créer un second.
+        chat = (
+            Chat.objects.filter(chat_type=Chat.ChatType.DIRECT, memberships__user=invitation.sender)
+            .filter(memberships__user=invitation.recipient)
+            .first()
         )
+        if not chat:
+            chat = Chat.objects.create(
+                chat_type=Chat.ChatType.DIRECT,
+                created_by=invitation.sender
+            )
+            ChatMembership.objects.create(chat=chat, user=invitation.sender, added_by=invitation.sender)
+            ChatMembership.objects.create(chat=chat, user=invitation.recipient, added_by=invitation.sender)
+            note_systeme(chat, invitation.sender, "Discussion directe démarrée.")
         invitation.chat = chat
         invitation.save(update_fields=['chat'])
-
-        # Ajouter les deux membres
-        ChatMembership.objects.create(chat=chat, user=invitation.sender, added_by=invitation.sender)
-        ChatMembership.objects.create(chat=chat, user=invitation.recipient, added_by=invitation.sender)
-
-        # Créer un message système d'initialisation
-        note_systeme(chat, invitation.sender, "Discussion directe démarrée.")
+        # L'invitation croisée, si elle attend encore, n'a plus d'objet.
+        ChatInvitation.objects.filter(
+            sender=invitation.recipient, recipient=invitation.sender, status=ChatInvitation.Status.PENDING,
+        ).update(status=ChatInvitation.Status.ACCEPTED, chat=chat)
 
         return Response({
             'detail': 'Invitation acceptée.',
@@ -903,18 +942,43 @@ class MemberSearchView(APIView):
 class PilotageConfigView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
+    @staticmethod
+    def _globale():
+        return MessagingPilotageConfig.objects.filter(daara=None).first() or MessagingPilotageConfig()
+
+    def _du_daara(self, daara_id, creer=False):
+        """La config d'un Daara ; à défaut, une copie NON enregistrée de la globale.
+
+        La lecture faisait un `get_or_create` : afficher la messagerie
+        suffisait à créer la config du Daara, tout ouvert. Seule une
+        modification explicite l'enregistre désormais — en partant des
+        valeurs globales, jamais des valeurs par défaut.
+        """
+        from accounts.models import Daara
+        from .services import DROITS_PILOTAGE
+
+        try:
+            daara = Daara.objects.get(pk=int(daara_id))
+        except (Daara.DoesNotExist, TypeError, ValueError):
+            raise ValidationError({'daara': "Daara introuvable."})
+        cfg = MessagingPilotageConfig.objects.filter(daara=daara).first()
+        if cfg:
+            return cfg
+        globale = self._globale()
+        cfg = MessagingPilotageConfig(daara=daara, **{c: getattr(globale, c) for c in DROITS_PILOTAGE})
+        if creer:
+            cfg.save()
+        return cfg
+
     def get(self, request):
         # Les chefs de daara voient la config de leur Daara, les admins voient tout,
         # les membres normaux voient la config globale.
         daara_id = request.query_params.get('daara_id')
 
         if request.user.role == User.Role.ADMIN:
-            if daara_id:
-                cfg, _ = MessagingPilotageConfig.objects.get_or_create(daara_id=daara_id)
-            else:
-                cfg, _ = MessagingPilotageConfig.objects.get_or_create(daara=None)
-        elif request.user.role == User.Role.CHEF_DAARA:
-            cfg, _ = MessagingPilotageConfig.objects.get_or_create(daara=request.user.daara)
+            cfg = self._du_daara(daara_id) if daara_id else self._globale()
+        elif request.user.role == User.Role.CHEF_DAARA and request.user.daara_id:
+            cfg = self._du_daara(request.user.daara_id)
         else:
             # Simple membre : voit sa config applicable
             cfg = get_effective_config(request.user)
@@ -922,21 +986,35 @@ class PilotageConfigView(APIView):
         return Response(MessagingPilotageConfigSerializer(cfg).data)
 
     def patch(self, request):
+        from .services import DROITS_PILOTAGE
+
         # Modification restreinte aux admins et chefs de daara
         daara_id = request.data.get('daara')
 
         if request.user.role == User.Role.ADMIN:
             if daara_id:
-                cfg, _ = MessagingPilotageConfig.objects.get_or_create(daara_id=daara_id)
+                cfg = self._du_daara(daara_id, creer=True)
             else:
                 cfg, _ = MessagingPilotageConfig.objects.get_or_create(daara=None)
         elif request.user.role == User.Role.CHEF_DAARA:
+            if not request.user.daara_id:
+                raise ValidationError("Vous n'êtes rattaché à aucun Daara.")
             # Un chef ne peut modifier que la config de son daara
-            if daara_id and int(daara_id) != request.user.daara_id:
+            if daara_id and str(daara_id) != str(request.user.daara_id):
                 raise PermissionDenied("Vous ne pouvez modifier que la configuration de votre propre Daara.")
-            if not request.user.daara:
-                raise ValidationError("Vous n'êtes rattaché à aucune Daara.")
-            cfg, _ = MessagingPilotageConfig.objects.get_or_create(daara=request.user.daara)
+            # Il resserre la règle commune, il ne rouvre pas ce que
+            # l'administration a fermé (voir `get_effective_config`).
+            globale = self._globale()
+            rouverts = [
+                c for c in DROITS_PILOTAGE
+                if request.data.get(c) is True and not getattr(globale, c)
+            ]
+            if rouverts:
+                raise PermissionDenied(
+                    "L'administration a fermé ce réglage pour tout le Kourel : "
+                    "un Daara ne peut pas le rouvrir."
+                )
+            cfg = self._du_daara(request.user.daara_id, creer=True)
         else:
             raise PermissionDenied("Seuls les administrateurs et les coordinateurs du Daara peuvent modifier la configuration.")
 
@@ -1100,7 +1178,10 @@ class AnnouncementViewSet(viewsets.ModelViewSet):
         là on filtre les annonces pour un membre, ici on cherche les membres
         pour une annonce.
         """
-        qs = User.objects.filter(is_active=True)
+        # `status` et non `is_active`, que rien ne passe jamais à False : une
+        # annonce critique partait par courriel aux comptes bloqués et aux
+        # inscriptions que l'administration n'a pas encore validées.
+        qs = User.objects.filter(status=User.Status.ACTIVE)
         if annonce.target == Announcement.Target.DAARA_ONLY and annonce.daara_id:
             qs = qs.filter(daara_id=annonce.daara_id)
         if annonce.target_role != Announcement.TargetRole.ALL:

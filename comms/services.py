@@ -194,18 +194,35 @@ def get_effective_config(user):
     if getattr(user, 'role', None) == get_user_model().Role.ADMIN:
         return MessagingPilotageConfig()
 
+    global_config = MessagingPilotageConfig.objects.filter(daara=None).first() or MessagingPilotageConfig()
     daara = getattr(user, 'daara', None)
-    if daara:
-        config = MessagingPilotageConfig.objects.filter(daara=daara).first()
-        if config:
-            return config
-
-    global_config = MessagingPilotageConfig.objects.filter(daara=None).first()
-    if global_config:
+    config = MessagingPilotageConfig.objects.filter(daara=daara).first() if daara else None
+    if not config:
         return global_config
 
-    # Fallback si aucun objet n'existe du tout
-    return MessagingPilotageConfig()
+    # ═══════════════════════════════════════════════════════════════════════
+    # Un Daara resserre la règle commune, il ne la desserre jamais
+    # ═══════════════════════════════════════════════════════════════════════
+    # La config du Daara REMPLAÇAIT la globale. Or le simple affichage de la
+    # messagerie par un coordinateur créait cette config, tout ouvert : chaque
+    # restriction posée par l'administration (salons, fichiers, recherche hors
+    # Daara…) tombait pour son Daara sans que personne l'ait décidé. Chaque
+    # droit vaut désormais « permis globalement ET permis par le Daara ».
+    effective = MessagingPilotageConfig(daara=daara)
+    for champ in DROITS_PILOTAGE:
+        setattr(effective, champ, getattr(global_config, champ) and getattr(config, champ))
+    return effective
+
+
+#: Les droits que le pilotage ouvre ou ferme (tous les `allow_*`).
+DROITS_PILOTAGE = (
+    'allow_cross_daara_search',
+    'allow_member_invite',
+    'allow_group_creation',
+    'allow_invite_accept_decline',
+    'allow_member_visibility_setting',
+    'allow_file_sharing',
+)
 
 def joignables(sender, salon=False):
     """Les comptes que `sender` peut trouver et inviter — en UNE requête.
@@ -232,7 +249,9 @@ def joignables(sender, salon=False):
     from .models import UserMessagingPreferences
 
     User = get_user_model()
-    qs = User.objects.filter(is_active=True).exclude(pk=sender.pk).exclude(email=EMAIL_SYSTEME)
+    # `status` et non `is_active`, que rien ne passe jamais à False : un compte
+    # bloqué ou une inscription pas encore validée restait trouvable et joignable.
+    qs = User.objects.filter(status=User.Status.ACTIVE).exclude(pk=sender.pk).exclude(email=EMAIL_SYSTEME)
     if sender.role == User.Role.ADMIN:
         return qs
     qs = qs.exclude(role=User.Role.ADMIN)
@@ -334,7 +353,7 @@ def destinataires_push(message):
 
     elus = []
     for m in memberships:
-        if m.is_muted or not m.user.is_active:
+        if m.is_muted or m.user.status != m.user.Status.ACTIVE:
             continue
         prefs = getattr(m.user, 'messaging_preferences', None)
         if prefs is not None and not prefs.notifications_enabled:
