@@ -204,7 +204,39 @@ class ChatViewSet(viewsets.ModelViewSet):
         raise MethodNotAllowed(request.method)
 
     def destroy(self, request, *args, **kwargs):
-        raise MethodNotAllowed(request.method)
+        """Supprimer un SALON : l'administration seule (demande du 2026-10-31).
+
+        Le cas d'usage : un salon que tous ses membres ont quitté, archivé et
+        visible de l'admin seul. Les canaux du Kourel et les tête-à-tête ne se
+        suppriment jamais ; pour tout autre rôle, la route reste fermée (405),
+        comme l'a voulu l'audit de sécurité.
+        """
+        if request.user.role != User.Role.ADMIN:
+            raise MethodNotAllowed(request.method)
+        chat = self.get_object()
+        if chat.chat_type != Chat.ChatType.GROUP:
+            # Un canal s'archive, un tête-à-tête se met en sourdine : même
+            # pour l'admin, la route n'existe pas pour eux (`tests_securite`).
+            raise MethodNotAllowed(request.method)
+
+        # Les fichiers partagés ne partent pas avec la cascade des messages :
+        # ils resteraient sur le disque, sans plus aucun lien pour les servir.
+        fichiers = [m.file for m in chat.messages.exclude(file='').exclude(file__isnull=True)]
+        membres = list(chat.memberships.values_list('user_id', flat=True))
+        chat_id = chat.pk
+        with transaction.atomic():
+            chat.delete()
+
+            def apres():
+                for fichier in fichiers:
+                    fichier.delete(save=False)
+                # Les fenêtres ouvertes rechargent leur liste ; le salon en sort.
+                publier(f'private-chat.{chat_id}', 'chat-settings', {'chat_id': chat_id, 'deleted': True})
+                for user_id in membres:
+                    publier(f'private-user.{user_id}', 'chat-settings', {'chat_id': chat_id, 'deleted': True})
+
+            transaction.on_commit(apres)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=['post'], url_path='read')
     def mark_read(self, request, pk=None):
