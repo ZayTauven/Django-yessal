@@ -365,10 +365,15 @@ def diffuser_message(message):
     from .notify import nom_de
 
     chat = message.chat
-    est_canal = chat.chat_type == Chat.ChatType.CHANNEL
-    # Un canal compte tout le Kourel : un seul événement sur le canal commun
+    # Un canal pour tout le Kourel : un seul événement sur le canal commun
     # plutôt que des milliers de canaux personnels.
-    membres = [] if est_canal else list(
+    #
+    # Mais PAS un canal ciblé (`audience` : un titre, un Daara, un rôle). Tout
+    # membre connecté peut écouter `private-kourel` ; le texte d'un canal
+    # réservé y partait en entier, lisible par qui n'en est pas. Celui-là
+    # passe par les canaux personnels de ses seuls membres, comme un salon.
+    est_canal_commun = chat.chat_type == Chat.ChatType.CHANNEL and not chat.audience
+    membres = [] if est_canal_commun else list(
         ChatMembership.objects.filter(chat_id=message.chat_id).values_list('user_id', flat=True)
     )
     pousses = destinataires_push(message)
@@ -395,7 +400,7 @@ def diffuser_message(message):
     donnees = {'url': f'/dashboard/chat/{message.chat_id}', 'chat_id': message.chat_id, 'type': 'chat_message'}
 
     def _envoyer():
-        if est_canal:
+        if est_canal_commun:
             trigger_pusher(CANAL_COMMUN, 'chat-updated', resume)
         canaux = [f'private-user.{uid}' for uid in membres]
         for i in range(0, len(canaux), PUSHER_CANAUX_PAR_APPEL):

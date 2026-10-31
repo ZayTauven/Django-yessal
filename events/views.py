@@ -40,6 +40,31 @@ from .serializers import CampaignSerializer, CampaignTodoSerializer, FeteSeriali
 CAMPAIGN_CREATOR_ROLES = ('admin',)
 
 
+#: Les rôles qui voient le montant de chaque Jëf — la même liste que
+#: l'affichage (`yessal-mobile/lib/roles.ts`, `AMOUNT_ROLES`).
+ROLES_MONTANTS = {User.Role.ADMIN, User.Role.CHEF_DAARA, User.Role.COLLECTOR, User.Role.GUIDE}
+
+
+def _masquer_contribution(ligne, don, user):
+    """Ce que `/etat/` laisse voir d'un Jëf, selon qui regarde.
+
+    Les deux `/etat/` sont ouverts à tout compte connecté — un talubé y lit
+    le Ndiguel qu'il suit. Ils renvoyaient pourtant à chacun le montant de
+    CHAQUE Jëf, que les écrans ne masquaient qu'à l'affichage ; et pour un Jëf
+    anonyme, le nom était caché mais `member_id` et le Daara restaient là,
+    de quoi retrouver le donateur.
+
+    - un talubé ne voit que le montant de SON propre Jëf ;
+    - un Jëf anonyme ne dit ni qui ni d'où, sauf à l'administration.
+    """
+    if user.role not in ROLES_MONTANTS and don.donor_id != user.id:
+        ligne['amount'] = None
+    if don.is_anonymous and user.role != User.Role.ADMIN:
+        ligne['member_id'] = None
+        ligne['daara_name'] = None
+    return ligne
+
+
 class IsCampaignOrganizer(permissions.BasePermission):
     """
     - GET (liste/détail) : ouvert à tous les utilisateurs authentifiés.
@@ -160,7 +185,7 @@ class FeteViewSet(viewsets.ModelViewSet):
         for d in donations:
             donor_name = d.donor.get_full_name().strip() if d.donor else ''
             member_name = 'Contributeur anonyme' if d.is_anonymous else (donor_name or getattr(d.donor, 'email', '') or getattr(d.donor, 'phone', '') or str(d.donor_id))
-            contributions.append({
+            contributions.append(_masquer_contribution({
                 'member_name': member_name,
                 'member_id': d.donor_id,
                 'daara_name': d.donor.daara.name if d.donor and d.donor.daara else None,
@@ -169,7 +194,7 @@ class FeteViewSet(viewsets.ModelViewSet):
                 'date': d.created_at.date().isoformat(),
                 'payment_method': d.payment_method,
                 'is_anonymous': d.is_anonymous,
-            })
+            }, d, request.user))
 
         campaign_data = []
         for c in campaigns:
@@ -386,7 +411,7 @@ class CampaignViewSet(viewsets.ModelViewSet):
         for d in donations.order_by('-created_at'):
             donor_name = d.donor.get_full_name().strip() if d.donor else ''
             member_name = 'Contributeur anonyme' if d.is_anonymous else (donor_name or d.donor.email or d.donor.phone)
-            contributions.append(
+            contributions.append(_masquer_contribution(
                 {
                     'member_name': member_name,
                     'member_id': d.donor_id,
@@ -395,8 +420,9 @@ class CampaignViewSet(viewsets.ModelViewSet):
                     'date': d.created_at.date(),
                     'payment_method': d.payment_method,
                     'is_anonymous': d.is_anonymous,
-                }
-            )
+                },
+                d, request.user,
+            ))
 
         return Response(
             {

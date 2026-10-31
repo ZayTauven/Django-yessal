@@ -79,3 +79,31 @@ class AnnoncesTests(APITestCase):
     def test_l_administrateur_retire_une_annonce(self):
         self.client.force_authenticate(self.admin)
         self.assertEqual(self.client.delete(self.url(self.globale)).status_code, 204)
+
+
+class CanalCommunTests(SansReseau):
+    """`private-kourel` est ouvert à tout membre : un canal ciblé n'y passe pas."""
+
+    def setUp(self):
+        super().setUp()
+        self.admin = creer('admin@ex.org', role=User.Role.ADMIN)
+        self.membre = creer('m@ex.org')
+
+    def publier(self, canal):
+        with self.captureOnCommitCallbacks(execute=True):
+            Message.objects.create(chat=canal, sender=self.admin, content='Montants du titre')
+            from comms.services import diffuser_message
+            diffuser_message(canal.messages.latest('id'))
+        return [appel.args[0] for appel in self.pusher.call_args_list]
+
+    def test_un_canal_pour_tous_part_sur_le_canal_commun(self):
+        canal = salon(self.admin, self.membre, chat_type=Chat.ChatType.CHANNEL, name='Les Jëfs du Kourel')
+        self.assertIn('private-kourel', self.publier(canal))
+
+    def test_un_canal_cible_ne_part_qu_a_ses_membres(self):
+        canal = salon(self.admin, self.membre, chat_type=Chat.ChatType.CHANNEL, name='Diwan')
+        canal.audience = {'titres': [1]}
+        canal.save(update_fields=['audience'])
+        canaux = self.publier(canal)
+        self.assertNotIn('private-kourel', canaux)
+        self.assertIn([f'private-user.{self.admin.id}', f'private-user.{self.membre.id}'], canaux)

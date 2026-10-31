@@ -12,7 +12,7 @@ from django.contrib.auth.hashers import make_password
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.test import TestCase
-from rest_framework.test import APITestCase
+from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import UserDocument
 from accounts.services.user_import import ANCIEN_MOT_DE_PASSE_COMMUN
@@ -125,3 +125,57 @@ class RegenerationTests(TestCase):
         self.assertTrue(compte.check_password(provisoire))
         self.assertEqual(compte.token_version, 1)
         self.assertTrue(User.objects.get(email='libre@ex.org').check_password('choisi-par-lui'))
+
+
+class BlocageTests(APITestCase):
+    """Un compte bloqué gardait l'API jusqu'à l'expiration de ses jetons."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            email='admin@ex.org', password='x', role=User.Role.ADMIN, status=User.Status.ACTIVE,
+        )
+        self.collecteur = User.objects.create_user(
+            email='c@ex.org', password='bon-mot-de-passe-1', role=User.Role.COLLECTOR,
+            status=User.Status.ACTIVE,
+        )
+
+    def jetons(self):
+        r = self.client.post('/api/auth/login/', {'identifier': 'c@ex.org', 'password': 'bon-mot-de-passe-1'}, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+        return r.data['access'], r.data['refresh']
+
+    def test_le_blocage_ferme_les_sessions_ouvertes(self):
+        acces, rafraichi = self.jetons()
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {acces}')
+        self.assertEqual(self.client.get('/api/profile/').status_code, 200)
+
+        admin = APIClient()
+        admin.force_authenticate(self.admin)
+        self.assertEqual(admin.post(f'/api/users/{self.collecteur.id}/block/').status_code, 200)
+
+        self.assertEqual(self.client.get('/api/profile/').status_code, 401)
+        self.client.credentials()
+        r = self.client.post('/api/auth/refresh/', {'refresh': rafraichi}, format='json')
+        self.assertEqual(r.status_code, 401)
+
+    def test_un_jeton_d_un_compte_inactif_est_refuse(self):
+        acces, _ = self.jetons()
+        User.objects.filter(pk=self.collecteur.pk).update(status=User.Status.BLOCKED)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {acces}')
+        self.assertEqual(self.client.get('/api/profile/').status_code, 401)
+
+
+class IdentiteDuVisiteurTests(TestCase):
+    """Un `X-Forwarded-For` forgé ne doit pas changer d'identité aux yeux des quotas."""
+
+    def test_seule_l_adresse_posee_par_le_relais_compte(self):
+        from rest_framework.request import Request
+        from rest_framework.test import APIRequestFactory
+        from rest_framework.throttling import AnonRateThrottle
+
+        def ident(xff):
+            req = Request(APIRequestFactory().get('/', HTTP_X_FORWARDED_FOR=xff, REMOTE_ADDR='172.16.1.2'))
+            return AnonRateThrottle().get_ident(req)
+
+        self.assertEqual(ident('1.1.1.1, 41.82.0.7'), '41.82.0.7')
+        self.assertEqual(ident('9.9.9.9, 41.82.0.7'), '41.82.0.7')

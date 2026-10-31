@@ -35,6 +35,6 @@ sqlparse==0.5.5
 tablib==3.9.0
 tzdata==2026.1
 urllib3==2.7.0
-gunicorn==22.0.0
+gunicorn==23.0.0
 firebase-admin>=6.5.0
 whitenoise==6.8.2

@@ -47,6 +47,11 @@ class VersionedTokenRefreshSerializer(TokenRefreshSerializer):
                 code='token_revoked',
             )
 
+        # Même règle que `VersionedJWTAuthentication` : un compte bloqué ne
+        # prolonge pas sa session.
+        if user.status != User.Status.ACTIVE:
+            raise AuthenticationFailed("Ce compte n'est pas actif.", code='user_inactive')
+
         return data
 
 

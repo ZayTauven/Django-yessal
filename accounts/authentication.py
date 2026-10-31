@@ -51,4 +51,13 @@ class VersionedJWTAuthentication(JWTAuthentication):
                 code='token_revoked',
             )
 
+        # La connexion refuse un compte qui n'est pas actif ; un jeton déjà
+        # émis doit en faire autant. Sans cela, un collecteur bloqué pour
+        # fraude gardait l'API jusqu'à l'expiration de ses jetons — un jour.
+        if user.status != user.Status.ACTIVE:
+            raise AuthenticationFailed(
+                "Ce compte n'est pas actif.",
+                code='user_inactive',
+            )
+
         return user

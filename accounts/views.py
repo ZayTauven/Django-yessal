@@ -1346,6 +1346,10 @@ class UserManagementViewSet(viewsets.ModelViewSet):
         user = self.get_object()
         user.status = User.Status.BLOCKED
         user.save(update_fields=['status'])
+        # Les jetons déjà émis tombent aussi : l'authentification refuse un
+        # compte inactif, et la génération change pour les clients qui
+        # gardent un jeton en cache.
+        user.revoke_sessions()
 
         # Le blocage est le plus souvent administratif — doublon, compte de
         # test — rarement une sanction. Le message ne doit pas accuser.

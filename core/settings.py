@@ -376,6 +376,18 @@ REST_FRAMEWORK = {
         # fait échouer le test du parcours, ce qui a révélé le problème.
         'mot_de_passe_reset': config('THROTTLE_PASSWORD_RESET', default='20/hour'),
     },
+    # ═══════════════════════════════════════════════════════════════════════
+    # Qui est « le visiteur » pour les quotas
+    # ═══════════════════════════════════════════════════════════════════════
+    # Sans ce réglage, DRF prenait TOUT `X-Forwarded-For` comme identité — y
+    # compris la partie écrite par le visiteur lui-même, que nginx conserve
+    # (`$proxy_add_x_forwarded_for` AJOUTE). Changer l'en-tête à chaque
+    # requête suffisait à échapper à tous les quotas anonymes.
+    #
+    # Un seul relais de confiance — le frontal nginx, ou le conteneur Next pour
+    # les Server Actions (`front-web/src/lib/client-ip.ts`) : DRF ne lit que la
+    # dernière adresse, celle que ce relais a posée.
+    'NUM_PROXIES': config('THROTTLE_NUM_PROXIES', default=1, cast=int),
 }
 
 # JWT Settings
