@@ -258,6 +258,19 @@ else:
     }
 
 
+# Le hacheur par défaut reste le premier : c'est lui qui hache tout mot de
+# passe choisi par un humain. Le dernier ne sert qu'aux provisoires de l'import
+# Excel (`accounts/hashers.py`) ; il doit figurer ici pour que Django sache
+# vérifier ces hachages, puis les remplacer à la première connexion.
+PASSWORD_HASHERS = [
+    'django.contrib.auth.hashers.PBKDF2PasswordHasher',
+    'django.contrib.auth.hashers.PBKDF2SHA1PasswordHasher',
+    'django.contrib.auth.hashers.Argon2PasswordHasher',
+    'django.contrib.auth.hashers.BCryptSHA256PasswordHasher',
+    'django.contrib.auth.hashers.ScryptPasswordHasher',
+    'accounts.hashers.ProvisoirePBKDF2PasswordHasher',
+]
+
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
 
@@ -412,7 +425,8 @@ else:
     # car Gunicorn ne les sert pas tout seul.
     STORAGES = {
         'default': {
-            'BACKEND': 'django.core.files.storage.FileSystemStorage',
+            # Signe les URL de `documents/` et `chat_files/` (core/media.py).
+            'BACKEND': 'core.media.StockageMedias',
         },
         'staticfiles': {
             'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage',

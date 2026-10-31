@@ -47,6 +47,7 @@ s'engager.
 from __future__ import annotations
 
 import difflib
+import secrets
 from dataclasses import dataclass, field
 
 import openpyxl
@@ -59,11 +60,29 @@ from accounts.services.accueil import ROLES_COMMUNAUTAIRES
 from accounts.services.ldd_import import _cle, _normaliser
 from core.mail import send_to_users
 
-#: Le mot de passe que reçoivent tous les comptes importés. Le membre est tenu
-#: de le remplacer (`must_change_password`), dernière étape de son accueil.
-#: ⚠ Le front l'ANNONCE à l'administrateur avant l'import : toute modification
-#: se reporte dans `UserManagementClient.tsx` (`IMPORT_DEFAULT_PASSWORD`).
-MOT_DE_PASSE_PAR_DEFAUT = "YessalPassword2024!"
+#: L'ancien mot de passe COMMUN de tous les comptes importés. Écrit dans le
+#: dépôt, annoncé par l'écran d'import : quiconque le connaissait ouvrait
+#: n'importe quel compte importé dont il savait le téléphone. Il ne sert plus
+#: qu'à retrouver les comptes qui le portent encore
+#: (`manage.py regenerer_mots_de_passe_import`).
+ANCIEN_MOT_DE_PASSE_COMMUN = "YessalPassword2024!"
+
+#: Sans 0/O, 1/I/L : le mot de passe se dicte de vive voix, au téléphone.
+ALPHABET_PROVISOIRE = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+
+def mot_de_passe_provisoire() -> str:
+    """Douze caractères tirés par `secrets`, en trois groupes : « K7QM-2WXA-PR9D ».
+
+    Près de 60 bits d'entropie : assez pour le hacheur allégé des provisoires
+    (`accounts/hashers.py`). Le membre le remplace à son accueil.
+    """
+    car = "".join(secrets.choice(ALPHABET_PROVISOIRE) for _ in range(12))
+    return f"{car[:4]}-{car[4:8]}-{car[8:]}"
+
+
+def hacher_provisoire(mot_de_passe: str) -> str:
+    return make_password(mot_de_passe, hasher="pbkdf2_provisoire")
 
 #: Au-delà, le fichier n'est pas une liste de membres mais une erreur de
 #: manipulation — et la requête dépasserait le délai du serveur.
@@ -113,6 +132,10 @@ class Ligne:
     #: Pourquoi le Daara n'a pas été affecté, ou pourquoi la ligne est refusée.
     motif: str | None = None
     remarques: list[str] = field(default_factory=list)
+    #: Le mot de passe provisoire du compte créé. Rendu UNE fois, dans le
+    #: rapport de l'import réel : l'administrateur le transmet de vive voix,
+    #: et il n'est stocké nulle part en clair.
+    mot_de_passe: str | None = None
 
     def en_dict(self) -> dict:
         return {
@@ -124,6 +147,7 @@ class Ligne:
             "daara": self.daara,
             "motif": self.motif,
             "remarques": self.remarques,
+            "mot_de_passe": self.mot_de_passe,
         }
 
 
@@ -157,7 +181,6 @@ class Rapport:
             "success": self.erreur is None,
             "apercu": self.apercu,
             "message": self.resume(),
-            "mot_de_passe": MOT_DE_PASSE_PAR_DEFAUT,
             "totaux": {
                 "lignes": len(self.lignes),
                 "crees": self._compte(Verdict.CREE),
@@ -335,13 +358,6 @@ def importer(fichier, *, request, apercu: bool = False) -> Rapport:
 
     index = IndexDaaras()
     crees: list[User] = []
-    # Haché UNE fois pour tout le fichier : tous les comptes importés reçoivent
-    # ce même mot de passe, connu de l'administrateur et à changer au premier
-    # accès. Un hachage par ligne coûtait 0,44 s ; 260 lignes dépassaient le
-    # délai de gunicorn (30 s), aperçu compris, et la requête mourait. Le
-    # même sel pour tous ne révèle rien de plus : le mot de passe est commun.
-    hache = make_password(MOT_DE_PASSE_PAR_DEFAUT)
-
     with transaction.atomic():
         for brute in lignes:
             prenom, nom = brute.get("first_name", ""), brute.get("last_name", "")
@@ -377,6 +393,11 @@ def importer(fichier, *, request, apercu: bool = False) -> Rapport:
                     brute.get("daara", ""), brute.get("ldd", ""), brute.get("code_ldd", ""),
                 )
 
+            # Un mot de passe PAR COMPTE. Le hacheur par défaut coûtait 0,44 s
+            # par ligne : 260 lignes dépassaient le délai de gunicorn (30 s),
+            # aperçu compris. D'où le hacheur allégé, sûr pour un secret
+            # aléatoire (`accounts/hashers.py`).
+            mot_de_passe = mot_de_passe_provisoire()
             serializer = UserSerializer(
                 data={
                     "first_name": prenom,
@@ -384,12 +405,16 @@ def importer(fichier, *, request, apercu: bool = False) -> Rapport:
                     "email": email or None,
                     "phone": telephone or None,
                     "role": role,
-                    "password": MOT_DE_PASSE_PAR_DEFAUT,
+                    "password": mot_de_passe,
                 },
                 # Les courriels partent en un seul envoi groupé, après la
                 # transaction : un par compte, en série, ferait dépasser le
                 # délai de la requête dès quelques centaines de lignes.
-                context={"request": request, "courriel_differe": True, "mot_de_passe_hache": hache},
+                context={
+                    "request": request,
+                    "courriel_differe": True,
+                    "mot_de_passe_hache": hacher_provisoire(mot_de_passe),
+                },
             )
             if not serializer.is_valid():
                 resultat.motif = _erreurs_en_texte(serializer.errors)
@@ -403,6 +428,8 @@ def importer(fichier, *, request, apercu: bool = False) -> Rapport:
                 continue
 
             crees.append(user)
+            if not apercu:
+                resultat.mot_de_passe = mot_de_passe
             if daara is not None:
                 resultat.verdict = Verdict.CREE
                 resultat.daara = index.libelle(daara)

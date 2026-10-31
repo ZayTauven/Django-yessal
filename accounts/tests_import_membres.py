@@ -18,7 +18,7 @@ from rest_framework.test import APIClient
 
 from accounts.models import LDD, Daara
 from accounts.services.accueil import etapes_accueil
-from accounts.services.user_import import MOT_DE_PASSE_PAR_DEFAUT, Verdict
+from accounts.services.user_import import ANCIEN_MOT_DE_PASSE_COMMUN, Verdict
 
 User = get_user_model()
 
@@ -159,10 +159,10 @@ class LignesEtRolesTests(Socle):
 
     def test_telephone_saisi_en_nombre(self):
         """Excel range « 771230001 » en nombre ; openpyxl le rend parfois en flottant."""
-        self.importer([("Fatou", "Sow", "", 771230001.0, "", "KANDE", "")])
+        r = self.importer([("Fatou", "Sow", "", 771230001.0, "", "KANDE", "")])
         fatou = User.objects.get(first_name="Fatou")
         self.assertEqual(fatou.phone, "+221771230001")
-        self.assertTrue(fatou.check_password(MOT_DE_PASSE_PAR_DEFAUT))
+        self.assertTrue(fatou.check_password(r.data["lignes"][0]["mot_de_passe"]))
         self.assertTrue(fatou.must_change_password)
         self.assertEqual(fatou.status, User.Status.ACTIVE)
 
@@ -210,22 +210,34 @@ class ApercuEtCourrielsTests(Socle):
         self.assertEqual(len(rappels), 1)
         self.assertTrue(User.objects.filter(email="awa@yessal.org").exists())
 
-    def test_le_mot_de_passe_n_est_hache_qu_une_fois(self):
-        """« DU KOUREL.xlsx », 260 lignes : 0,44 s de hachage par ligne, et gunicorn
-        tuait la requête à 30 s — aperçu compris. Un hachage pour tout le fichier."""
+    def test_un_mot_de_passe_par_compte_et_hachage_allege(self):
+        """L'ancien mot de passe commun ouvrait tout compte importé à qui le
+        connaissait. Chaque compte a désormais le sien — haché par le hacheur
+        allégé : « DU KOUREL.xlsx », 260 lignes à 0,44 s chacune, dépassait le
+        délai de gunicorn (30 s)."""
         from unittest.mock import patch
 
-        from accounts.services import user_import
-
         lignes = [(f"P{i}", "Diop", f"m{i}@yessal.org", "", "", "", "") for i in range(40)]
-        with patch.object(user_import, "make_password", wraps=user_import.make_password) as hacher, \
-                patch.object(User, "set_password", side_effect=AssertionError("hachage par ligne")):
+        with patch.object(User, "set_password", side_effect=AssertionError("hacheur par défaut")):
             r = self.importer(lignes)
         self.assertEqual(r.status_code, 200, r.data)
-        self.assertEqual(hacher.call_count, 1)
+        mots = [l["mot_de_passe"] for l in r.data["lignes"]]
+        self.assertEqual(len(set(mots)), 40)
+        self.assertRegex(mots[7], r"^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$")
+
         compte = User.objects.get(email="m7@yessal.org")
-        self.assertTrue(compte.check_password(MOT_DE_PASSE_PAR_DEFAUT))
+        self.assertTrue(compte.password.startswith("pbkdf2_provisoire$"))
         self.assertTrue(compte.must_change_password)
+        self.assertFalse(compte.check_password(ANCIEN_MOT_DE_PASSE_COMMUN))
+        # La première vérification réussie le rehache avec le hacheur par défaut.
+        self.assertTrue(compte.check_password(mots[7]))
+        compte.refresh_from_db()
+        self.assertTrue(compte.password.startswith("pbkdf2_sha256$"))
+
+    def test_l_apercu_ne_devoile_aucun_mot_de_passe(self):
+        r = self.importer([("Awa", "Ndiaye", "awa@yessal.org", "", "", "", "")], apercu=True)
+        self.assertIsNone(r.data["lignes"][0]["mot_de_passe"])
+        self.assertNotIn("mot_de_passe", r.data)
 
 
 class AccueilTests(Socle):

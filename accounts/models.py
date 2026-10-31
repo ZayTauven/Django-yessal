@@ -1,8 +1,11 @@
 ﻿import logging
+import os
+import uuid
 
 from django.db import models
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from core.phone import normalize_phone
 from core.validators import downscale_image, validate_upload_size
@@ -26,6 +29,9 @@ class CustomUserManager(BaseUserManager):
         extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
         extra_fields.setdefault('is_active', True)
+        # Le rôle dit la même chose que les drapeaux (voir `User.save`) :
+        # sans lui, le superutilisateur naissait « membre » avec is_staff.
+        extra_fields.setdefault('role', self.model.Role.ADMIN)
 
         if not email:
             raise ValueError(_('Superuser must have an email address.'))
@@ -329,17 +335,33 @@ class User(AbstractUser):
             if update_fields is not None:
                 kwargs['update_fields'] = set(update_fields) | {'is_staff'}
 
-        # Nomination : on ne le sait qu'en relisant le rôle d'AVANT. Une seule
-        # requête, et seulement quand le rôle peut avoir changé — `last_login`
-        # et consorts passent ici avec `update_fields` sans `role`.
+        # Nomination ou destitution : on ne le sait qu'en relisant le rôle
+        # d'AVANT. Une seule requête, et seulement quand le rôle peut avoir
+        # changé — `last_login` et consorts passent ici avec `update_fields`
+        # sans `role`.
         update_fields = kwargs.get('update_fields')
-        devient_collecteur = False
-        if self.role == self.Role.COLLECTOR and (update_fields is None or 'role' in update_fields):
-            avant = (
-                type(self).objects.filter(pk=self.pk).values_list('role', flat=True).first()
-                if self.pk else None
-            )
-            devient_collecteur = avant != self.Role.COLLECTOR
+        avant = None
+        if self.pk and (update_fields is None or 'role' in update_fields):
+            avant = type(self).objects.filter(pk=self.pk).values_list('role', flat=True).first()
+        devient_collecteur = self.role == self.Role.COLLECTOR and avant != self.Role.COLLECTOR
+
+        # Le chemin inverse manquait : un administrateur rétrogradé gardait
+        # `is_staff` — donc la gestion des utilisateurs, `confirm-cash` et
+        # l'admin Django —, et pouvait se rendre lui-même son rôle. La
+        # destitution retire les deux drapeaux et ferme ses sessions : les
+        # jetons en main portaient encore `role: admin`.
+        #
+        # Seulement à la DESTITUTION, pas à chaque écriture : un compte
+        # technique dont le rôle n'aurait jamais été `admin` ne perd pas son
+        # accès au prochain `last_login`.
+        if avant == self.Role.ADMIN and self.role != self.Role.ADMIN:
+            self.is_staff = False
+            self.is_superuser = False
+            self.token_version += 1
+            if update_fields is not None:
+                kwargs['update_fields'] = set(update_fields) | {
+                    'is_staff', 'is_superuser', 'token_version',
+                }
 
         super().save(*args, **kwargs)
 
@@ -377,6 +399,18 @@ class TitleRequest(models.Model):
         return f"{self.member} -> {self.title} ({self.status})"
 
 
+def chemin_piece_identite(instance, filename):
+    """`documents/AAAA/MM/<uuid>.jpg` — jamais le nom d'origine.
+
+    Les pièces arrivaient sous leur nom de téléphone (`IMG-20261012-WA0003.jpg`,
+    le nommage de WhatsApp) : date et compteur, donc devinables par balayage,
+    et parfois le nom du membre lui-même. Le lien signé (`core/media.py`) ferme
+    déjà la porte ; le nom aléatoire ne laisse rien à deviner derrière.
+    """
+    extension = os.path.splitext(filename)[1].lower()[:10]
+    return timezone.now().strftime('documents/%Y/%m/') + f'{uuid.uuid4().hex}{extension}'
+
+
 class UserDocument(models.Model):
     class DocType(models.TextChoices):
         NATIONAL_ID = 'national_id', "Carte Nationale d'Identité"
@@ -391,8 +425,8 @@ class UserDocument(models.Model):
 
     user = models.ForeignKey('User', on_delete=models.CASCADE, related_name='documents')
     doc_type = models.CharField(max_length=20, choices=DocType.choices)
-    image = models.ImageField(upload_to='documents/%Y/%m/', validators=[validate_upload_size])
-    image_verso = models.ImageField(upload_to='documents/%Y/%m/', null=True, blank=True, validators=[validate_upload_size])
+    image = models.ImageField(upload_to=chemin_piece_identite, validators=[validate_upload_size])
+    image_verso = models.ImageField(upload_to=chemin_piece_identite, null=True, blank=True, validators=[validate_upload_size])
     doc_number = models.CharField(max_length=100, blank=True)
     status = models.CharField(max_length=10, choices=ValidationStatus.choices, default=ValidationStatus.PENDING)
     validated_by = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='validated_documents')

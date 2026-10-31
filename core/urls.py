@@ -18,7 +18,7 @@ from django.contrib import admin
 from django.http import JsonResponse
 from django.urls import path, include, re_path
 from django.conf import settings
-from django.views.static import serve as serve_media
+from core.media import servir_media
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -37,5 +37,7 @@ urlpatterns = [
 if not settings.USE_S3:
     _media_prefix = settings.MEDIA_URL.lstrip('/')
     urlpatterns += [
-        re_path(rf'^{_media_prefix}(?P<path>.*)$', serve_media, {'document_root': settings.MEDIA_ROOT}),
+        # `servir_media` exige une signature pour les pièces d'identité et les
+        # fichiers de la messagerie (core/media.py).
+        re_path(rf'^{_media_prefix}(?P<path>.*)$', servir_media, {'document_root': settings.MEDIA_ROOT}),
     ]

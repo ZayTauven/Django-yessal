@@ -436,10 +436,10 @@ class UserSerializer(serializers.ModelSerializer):
         password = validated_data.pop('password', None)
         user = super().create(validated_data)
         if password:
-            # L'import Excel fournit le mot de passe commun DÉJÀ haché : le
-            # hacher à chaque ligne (0,44 s, 1,2 million d'itérations) tenait
-            # 260 lignes près de deux minutes, et gunicorn tuait la requête
-            # au bout de trente secondes — l'écran n'affichait qu'un échec.
+            # L'import Excel fournit le provisoire de chaque compte DÉJÀ haché,
+            # par le hacheur allégé (`accounts/hashers.py`) : le hacheur par
+            # défaut (0,44 s, 1,2 million d'itérations) tenait 260 lignes près
+            # de deux minutes, et gunicorn tuait la requête à trente secondes.
             hache = self.context.get('mot_de_passe_hache')
             if hache:
                 user.password = hache

@@ -6,7 +6,7 @@ from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import MethodNotAllowed, PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -174,6 +174,27 @@ class ChatViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         chat = serializer.save()
         return Response(ChatSerializer(chat, context={'request': request}).data, status=status.HTTP_201_CREATED)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Ni PUT, ni PATCH, ni DELETE sur le fil lui-même
+    # ═══════════════════════════════════════════════════════════════════════
+    # Le `ModelViewSet` les offrait à tout MEMBRE du fil, avec un sérialiseur
+    # qui laisse écrire `chat_type`, `audience`, `show_amounts`… Un talubé
+    # pouvait supprimer « Les Jëfs du Kourel » et tous ses messages, ou le
+    # muer en salon où chacun publie. Aucun client ne s'en servait : les
+    # réglages passent par `settings`, l'archivage par `archive`, le départ
+    # par `leave` — trois actions qui vérifient le rôle.
+    #
+    # `http_method_names` aurait suffi, mais il fermerait aussi le PATCH de
+    # l'action `settings` : il s'applique au ViewSet entier.
+    def update(self, request, *args, **kwargs):
+        raise MethodNotAllowed(request.method)
+
+    def partial_update(self, request, *args, **kwargs):
+        raise MethodNotAllowed(request.method)
+
+    def destroy(self, request, *args, **kwargs):
+        raise MethodNotAllowed(request.method)
 
     @action(detail=True, methods=['post'], url_path='read')
     def mark_read(self, request, pk=None):
@@ -995,6 +1016,41 @@ class AnnouncementViewSet(viewsets.ModelViewSet):
             (Q(target='global') | Q(daara=user.daara))
             & (Q(target_role='all') | Q(target_role=user.role))
         ).order_by('-created_at')
+
+    def _peut_retoucher(self, annonce):
+        """Qui peut modifier ou retirer une annonce publiée.
+
+        `get_queryset` rend les annonces globales à TOUS les membres, et le
+        contrôle de rôle ne vivait que dans `perform_create` : un talubé
+        pouvait réécrire une annonce — de faux numéros Wave — ou l'effacer.
+        L'administration retouche tout ; un coordinateur, seulement les
+        annonces réservées à son propre Daara.
+        """
+        user = self.request.user
+        if user.role == 'admin':
+            return True
+        return (
+            user.role == 'chef_daara'
+            and user.daara_id is not None
+            and annonce.target == Announcement.Target.DAARA_ONLY
+            and annonce.daara_id == user.daara_id
+        )
+
+    def perform_update(self, serializer):
+        if not self._peut_retoucher(serializer.instance):
+            raise PermissionDenied("Vous ne pouvez pas modifier cette annonce.")
+        # Un coordinateur ne fait pas sortir l'annonce de son Daara en la
+        # modifiant : le contrôle se rejoue sur l'état d'arrivée, et la
+        # transaction défait l'écriture s'il échoue.
+        with transaction.atomic():
+            annonce = serializer.save()
+            if not self._peut_retoucher(annonce):
+                raise PermissionDenied("Vous ne pouvez pas élargir la portée de cette annonce.")
+
+    def perform_destroy(self, instance):
+        if not self._peut_retoucher(instance):
+            raise PermissionDenied("Vous ne pouvez pas supprimer cette annonce.")
+        instance.delete()
 
     def perform_create(self, serializer):
         if self.request.user.role not in ['admin', 'chef_daara']:
