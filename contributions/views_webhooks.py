@@ -5,6 +5,7 @@ from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseForbid
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from django.conf import settings
+from django.utils import timezone
 from comms.notify import notify
 
 from .models import Donation
@@ -77,6 +78,39 @@ def bictorys_webhook(request):
     if donation.payment_status == Donation.PaymentStatus.CONFIRMED:
         return HttpResponse(status=200)
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # Le webhook ne réécrit pas une décision de l'administration
+    # ═══════════════════════════════════════════════════════════════════════
+    # Seul `confirmed` était protégé : un Jëf ANNULÉ par un administrateur,
+    # motif compris, repassait « confirmé » au premier succès reçu, et un
+    # « failed » tardif l'écrasait en « échoué ». S'il arrive vraiment de
+    # l'argent pour un Jëf annulé, il faut un humain — rembourser ou rouvrir —
+    # pas un changement de statut silencieux.
+    if donation.payment_status == Donation.PaymentStatus.CANCELLED:
+        logger.warning(
+            "Webhook Bictorys « %s » reçu pour le Jëf annulé %s : statut inchangé.",
+            status, donation.id,
+        )
+        if status in ("succeeded", "authorized"):
+            from comms.notify import administrateurs, notify_many
+            from .views import montant_lisible
+            notify_many(
+                administrateurs(),
+                code='paiement_jef_annule',
+                titre='Paiement reçu pour un Jëf annulé',
+                message=(
+                    f"Bictorys confirme {montant_lisible(amount_received)} FCFA pour le Jëf "
+                    f"n°{donation.pk}, annulé auparavant. Remboursez le membre ou rouvrez le Jëf."
+                ),
+                courriel=False,
+            )
+        return HttpResponse(status=200)
+
+    # Un succès peut suivre un échec (nouvelle tentative du même paiement) ;
+    # l'inverse non : un « failed » ne touche qu'un Jëf encore en attente.
+    if status == "failed" and donation.payment_status != Donation.PaymentStatus.PENDING:
+        return HttpResponse(status=200)
+
     # 6. Update Status
     if status in ("succeeded", "authorized"):
         # Le montant vient d'un tiers : un champ non numérique ferait lever
@@ -94,7 +128,10 @@ def bictorys_webhook(request):
         if amount_received >= int(donation.amount):
             donation.payment_status = Donation.PaymentStatus.CONFIRMED
             donation.bictorys_ref = bictorys_id
-            donation.save(update_fields=["payment_status", "bictorys_ref"])
+            # La date de confirmation : sans elle, un Jëf payé en ligne n'avait
+            # aucune trace du moment où l'argent est arrivé.
+            donation.validated_at = timezone.now()
+            donation.save(update_fields=["payment_status", "bictorys_ref", "validated_at", "updated_at"])
             
             # Update campaign total
             if hasattr(donation.campaign, 'update_collected_amount'):
@@ -125,11 +162,11 @@ def bictorys_webhook(request):
         else:
             logger.warning(f"Amount mismatch for donation {donation.id}: expected {donation.amount}, received {amount_received}")
             donation.payment_status = Donation.PaymentStatus.FAILED
-            donation.save(update_fields=["payment_status"])
+            donation.save(update_fields=["payment_status", "updated_at"])
 
     elif status == "failed":
         donation.payment_status = Donation.PaymentStatus.FAILED
-        donation.save(update_fields=["payment_status"])
+        donation.save(update_fields=["payment_status", "updated_at"])
         logger.info(f"Donation {donation.id} marked as FAILED via Bictorys webhook")
 
         # « Aucune somme n'a été prélevée » est la phrase que le membre

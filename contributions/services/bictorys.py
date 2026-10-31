@@ -27,6 +27,13 @@ PAYMENT_TYPE_MAP = {
     'mastercard':   None,   # Checkout flow
 }
 
+# Ce que le Jëf retient du moyen choisi : les cartes héritées (`visa`,
+# `mastercard`) ne sont plus émises, elles s'enregistrent comme `bictorys`.
+PAYMENT_METHOD_RETENU = {
+    'visa': 'bictorys',
+    'mastercard': 'bictorys',
+}
+
 def initiate_bictorys_payment(donation, payment_method: str) -> dict:
     """
     Initiates a Bictorys charge for a donation.
@@ -45,10 +52,15 @@ def initiate_bictorys_payment(donation, payment_method: str) -> dict:
     payment_reference = f"don_{donation.id}_{uuid.uuid4().hex[:6]}"
     payment_type = PAYMENT_TYPE_MAP.get(payment_method)
 
+    # Une demande de collecte (espèces, en attente) que le membre règle
+    # finalement en ligne : le collecteur qui s'en chargeait n'est pas le
+    # payeur — c'est le membre, devant son téléphone.
+    demande_de_collecte = donation.payment_method == donation.PaymentMethod.MANUAL
+
     # Celui qui PAIE, pas forcément celui qui donne. Quand un collecteur règle
     # par Wave au nom d'un membre, la demande de validation partait sur le
     # téléphone du membre, qui n'était pas là pour l'accepter.
-    payeur = donation.collector or donation.donor
+    payeur = donation.donor if demande_de_collecte else (donation.collector or donation.donor)
 
     payload = {
         "merchantReference": str(uuid.uuid4()),
@@ -88,7 +100,19 @@ def initiate_bictorys_payment(donation, payment_method: str) -> dict:
         donation.bictorys_ref = data.get("id")
         donation.checkout_url = data.get("checkoutUrl")
         donation.payment_status = donation.PaymentStatus.PENDING
-        donation.save(update_fields=["external_ref", "bictorys_ref", "checkout_url", "payment_status"])
+        # Le moyen RÉELLEMENT employé. Il restait celui de la création : une
+        # demande de collecte payée par Wave demeurait « espèces, en attente »,
+        # donc dans la file des collecteurs — l'un d'eux pouvait encaisser en
+        # main propre un Jëf que Bictorys confirmait ensuite, et suspendre la
+        # collecte l'annulait en masse. Les cartes passent par le checkout.
+        donation.payment_method = PAYMENT_METHOD_RETENU.get(payment_method, payment_method)
+        champs = ["external_ref", "bictorys_ref", "checkout_url", "payment_status",
+                  "payment_method", "updated_at"]
+        if demande_de_collecte:
+            donation.collector = None
+            donation.claimed_at = None
+            champs += ["collector", "claimed_at"]
+        donation.save(update_fields=champs)
 
         return {
             "success": True,

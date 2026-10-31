@@ -1,4 +1,5 @@
-﻿from decimal import Decimal, InvalidOperation
+﻿import logging
+from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -19,6 +20,7 @@ from .serializers import CashDepositSerializer, DonationSerializer
 from .services.collecte import collecte_active, disponibilite
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 # Les rôles qui peuvent enregistrer un Jëf AU NOM d'un autre membre. Le
 # contrôle ne vivait que dans les interfaces : n'importe quel compte pouvait
@@ -35,7 +37,7 @@ def montant_lisible(valeur) -> str:
     """
     try:
         entier = int(round(float(valeur)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return str(valeur)
     return f'{entier:,}'.replace(',', '\u00a0')
 
@@ -91,6 +93,27 @@ def _accuser_encaissement(donation):
             'reference': f'REF-{donation.pk}',
             'statut': "Encaissé, en attente de remise",
         },
+    )
+
+
+def _liberer_collecteur(donation, collecteur):
+    """Prévient le collecteur engagé qu'une demande se règle sans lui.
+
+    Il avait dit « Je m'en charge » ; le membre a finalement payé en ligne ou
+    par virement. Sans ce message, il se déplaçait pour un argent déjà parti.
+    """
+    if not collecteur:
+        return
+    notify(
+        collecteur,
+        code='jef_pris_en_charge',
+        titre='Collecte annulée : réglé en ligne',
+        url=f'/dashboard/donations/{donation.pk}',
+        message=(
+            f"{nom_de(donation.donor)} a réglé son Jëf de {montant_lisible(donation.amount)} FCFA "
+            f"par {donation.get_payment_method_display()}. Vous n'avez plus à vous déplacer."
+        ),
+        courriel=False,
     )
 
 
@@ -380,13 +403,27 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
         if not payment_method:
             return Response({'error': 'Méthode de paiement requise.'}, status=400)
 
+        # Une demande de collecte que le membre règle finalement autrement :
+        # le collecteur qui avait dit « Je m'en charge » ne doit plus venir.
+        collecteur_engage = (
+            donation.collector
+            if donation.payment_method == Donation.PaymentMethod.MANUAL and donation.collector_id
+            else None
+        )
+
         if payment_method == Donation.PaymentMethod.VIREMENT:
             if not wire_reference:
                 return Response({'error': 'Référence de virement requise.'}, status=400)
+            champs = ['payment_method', 'payment_status', 'wire_reference', 'updated_at']
+            if donation.payment_method == Donation.PaymentMethod.MANUAL:
+                donation.collector = None
+                donation.claimed_at = None
+                champs += ['collector', 'claimed_at']
             donation.payment_method = Donation.PaymentMethod.VIREMENT
             donation.payment_status = Donation.PaymentStatus.PENDING_WIRE
             donation.wire_reference = wire_reference
-            donation.save(update_fields=['payment_method', 'payment_status', 'wire_reference', 'updated_at'])
+            donation.save(update_fields=champs)
+            _liberer_collecteur(donation, collecteur_engage)
 
             # Les coordonnées bancaires par écrit : c'est le courriel le plus
             # rouvert du produit — devant un guichet, parfois plusieurs jours
@@ -407,13 +444,21 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
         if payment_method not in ['orange_money', 'wave', 'visa', 'mastercard', 'bictorys']:
             return Response({'error': 'Méthode de paiement non supportée.'}, status=400)
 
-        try:
-            from .services.bictorys import initiate_bictorys_payment
+        from django.core.exceptions import ValidationError as DjangoValidationError
 
+        from .services.bictorys import initiate_bictorys_payment
+
+        try:
             result = initiate_bictorys_payment(donation, payment_method)
-            return Response(result)
-        except Exception as e:
-            return Response({'error': str(e)}, status=400)
+        except DjangoValidationError as e:
+            # Les messages du service sont écrits pour le donateur.
+            return Response({'error': ' '.join(e.messages)}, status=400)
+        except Exception:
+            # `str(e)` renvoyait au navigateur le détail interne d'une panne.
+            logger.exception("Paiement du Jëf %s : échec inattendu", donation.pk)
+            return Response({'error': "Le paiement n'a pas pu être lancé. Réessayez dans un instant."}, status=400)
+        _liberer_collecteur(donation, collecteur_engage)
+        return Response(result)
 
     @action(detail=False, methods=['post'], url_path='admin/create-archive', permission_classes=[permissions.IsAdminUser])
     def create_archive(self, request):
@@ -505,6 +550,14 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
             ):
                 return Response(
                     {'detail': "Ce Jëf n'attend pas de collecte."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            # La règle de `claim` valait pour la promesse et pas pour l'acte :
+            # un collecteur pouvait déclarer encaissé son propre Jëf, et devenir
+            # seul témoin de son argent jusqu'à la remise.
+            if donation.donor_id == request.user.pk:
+                return Response(
+                    {'detail': "Vous ne pouvez pas collecter votre propre Jëf."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             if donation.collector_id and donation.collector_id != request.user.pk:
@@ -657,6 +710,10 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
             )
         if not ids:
             return Response({'detail': "Aucun Jëf dans la remise."}, status=status.HTTP_400_BAD_REQUEST)
+        # « Infinity » et « NaN » sont des décimaux valides : ils passaient la
+        # lecture, puis faisaient tomber le message d'écart en 500.
+        if not compte.is_finite():
+            return Response({'detail': "Le montant compté doit être un nombre."}, status=status.HTTP_400_BAD_REQUEST)
 
         # Celui qui a encaissé ne valide jamais sa propre remise.
         if collector_id == request.user.pk:

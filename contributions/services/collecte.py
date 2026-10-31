@@ -59,7 +59,9 @@ def disponibilite(user) -> dict:
     """
     if not collecte_active():
         return {'active': False, 'disponible': False, 'raison': 'suspendue'}
-    if not collecteurs_de_zone(zone_de(user)).exists():
+    # Un collecteur ne collecte pas son propre Jëf (`collect`) : seul de sa
+    # zone, il créerait une demande que personne ne peut encaisser.
+    if not collecteurs_de_zone(zone_de(user)).exclude(pk=user.pk).exists():
         return {'active': True, 'disponible': False, 'raison': 'hors_zone'}
     return {'active': True, 'disponible': True, 'raison': None}
 
