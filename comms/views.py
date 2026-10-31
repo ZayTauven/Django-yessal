@@ -66,6 +66,9 @@ def pusher_auth(request):
     # 2. Canal privé ou présence d'un chat
     elif channel_name.startswith('private-chat.') or channel_name.startswith('presence-chat.'):
         chat_id = channel_name.split('.')[-1]
+        # Un identifiant non numérique faisait lever la requête : 500.
+        if not chat_id.isdigit():
+            raise PermissionDenied("Canal non reconnu ou non autorisé.")
         # Vérifier si l'utilisateur est membre du chat
         if not ChatMembership.objects.filter(chat_id=chat_id, user=request.user).exists():
             raise PermissionDenied("Vous n'êtes pas membre de ce chat.")
@@ -397,9 +400,13 @@ class ChatViewSet(viewsets.ModelViewSet):
         chat = self.get_object()
         if chat.chat_type != Chat.ChatType.CHANNEL or chat.channel_kind == Chat.ChannelKind.JEFS:
             raise ValidationError("Ce fil n'accepte pas d'auteurs désignés.")
-        user_id = request.data.get('user_id')
+        auteur = User.objects.filter(pk=request.data.get('user_id')).first() if str(
+            request.data.get('user_id', '')).isdigit() else None
+        if auteur is None:
+            # Un identifiant inconnu levait la contrainte de clé étrangère : 500.
+            raise ValidationError({'user_id': "Membre introuvable."})
         can_post = bool(request.data.get('can_post', True))
-        membership, _ = ChatMembership.objects.get_or_create(chat=chat, user_id=user_id)
+        membership, _ = ChatMembership.objects.get_or_create(chat=chat, user=auteur)
         membership.can_post = can_post
         membership.save(update_fields=['can_post'])
         return Response({'user_id': membership.user_id, 'can_post': membership.can_post})
@@ -739,7 +746,8 @@ class ChatInvitationViewSet(viewsets.ModelViewSet):
 
         try:
             recipient = User.objects.get(pk=recipient_id)
-        except User.DoesNotExist:
+        except (User.DoesNotExist, TypeError, ValueError):
+            # `ValueError` : un identifiant non numérique faisait une 500.
             raise ValidationError("Utilisateur introuvable.")
 
         # Vérifier si l'expéditeur a les droits d'invitation

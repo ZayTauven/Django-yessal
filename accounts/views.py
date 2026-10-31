@@ -2,6 +2,7 @@
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
 from rest_framework import generics, permissions, status, viewsets, filters, serializers
@@ -477,10 +478,20 @@ class DaaraViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Le champ ldd_id (LDD) est obligatoire.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
             ldd = LDD.objects.get(pk=ldd_id)
-        except LDD.DoesNotExist:
+        except (LDD.DoesNotExist, TypeError, ValueError):
             return Response({'error': 'LDD introuvable.'}, status=status.HTTP_400_BAD_REQUEST)
+        # Rien ne le vérifiait : un Daara sans nom s'enregistrait, et un nom
+        # déjà pris dans la zone faisait lever la contrainte d'unicité — 500.
+        nom = (data.get('name') or '').strip()
+        if not nom:
+            return Response({'name': ['Donnez un nom au Daara.']}, status=status.HTTP_400_BAD_REQUEST)
+        if Daara.objects.filter(ldd=ldd, name__iexact=nom).exists():
+            return Response(
+                {'name': [f"« {nom} » existe déjà dans la zone {ldd.name}."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         daara = Daara.objects.create(
-            name=data.get('name', '').strip(),
+            name=nom,
             ldd=ldd,
             is_active=data.get('is_active', True),
         )
@@ -488,7 +499,7 @@ class DaaraViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='etat', permission_classes=[permissions.IsAdminUser])
     def etat(self, request, pk=None):
-        daara = Daara.objects.select_related('ldd', 'chef', 'chef__title').get(pk=pk)
+        daara = get_object_or_404(Daara.objects.select_related('ldd', 'chef', 'chef__title'), pk=pk)
 
         def _avatar(u):
             if not u:
@@ -784,7 +795,12 @@ class TitleRequestViewSet(viewsets.ModelViewSet):
         note = serializer.validated_data.get('note', '')
 
         if action_name == 'approve':
-            tr = approve_title_request(tr, request.user, note=note)
+            try:
+                tr = approve_title_request(tr, request.user, note=note)
+            except DjangoValidationError as exc:
+                # Le service lève une erreur Django, pas DRF : non rattrapée,
+                # elle faisait une 500 (membre dont le changement est épuisé).
+                return Response({'detail': ' '.join(exc.messages)}, status=status.HTTP_400_BAD_REQUEST)
         else:
             tr = refuse_title_request(tr, request.user, note=note)
 
@@ -969,6 +985,15 @@ class MemberAssignTitleView(APIView):
         user.title_change_count = user.title_change_count + 1
         user.title_changed_at = timezone.now()
         user.save(update_fields=['title', 'title_change_count', 'title_changed_at'])
+        # L'attribution tranche : une demande encore en attente n'a plus
+        # d'objet. Restée ouverte, son approbation butait sur le changement
+        # épuisé. Close sans notification — celle de l'attribution suit.
+        TitleRequest.objects.filter(member=user, status=TitleRequest.Status.PENDING).update(
+            status=TitleRequest.Status.REFUSED,
+            reviewed_by=request.user,
+            reviewed_at=timezone.now(),
+            note="Titre attribué directement par l'administration.",
+        )
 
         notify(
             user,
@@ -989,6 +1014,26 @@ class TutelleViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(tutor=self.request.user)
+
+
+#: Abréviations françaises des mois : `strftime('%b')` suit la locale du
+#: serveur, et le graphique mensuel affichait « May, Jun, Jul ».
+MOIS_COURTS = ('janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin',
+               'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.')
+
+
+def en_cours_le(jour):
+    """Le filtre des Ndiguels en cours ce jour-là — `get_effective_status` en SQL.
+
+    Ni clôturé ni suspendu à la main, pas une date lunaire à confirmer,
+    échéance non passée ; ouvert depuis `opens_on` s'il en a une, sinon
+    marqué « en cours ».
+    """
+    return (
+        Q(a_confirmer=False, deadline__gte=jour)
+        & ~Q(status__in=[Campaign.Status.COMPLETED, Campaign.Status.INACTIVE])
+        & (Q(opens_on__isnull=True, status=Campaign.Status.ACTIVE) | Q(opens_on__lte=jour))
+    )
 
 
 class AnalyticsViewSet(viewsets.ViewSet):
@@ -1013,7 +1058,13 @@ class AnalyticsViewSet(viewsets.ViewSet):
                 pass
 
         confirmed_qs = Donation.objects.filter(payment_status='confirmed')
-        all_campaigns = Campaign.objects.filter(status='active')
+        # Les Ndiguels EN COURS, au sens de `Campaign.get_effective_status` :
+        # le filtre sur `status='active'` brut comptait un Ndiguel dont
+        # l'échéance était passée depuis trois semaines, une édition lunaire
+        # pas encore confirmée, une autre pas encore ouverte. Le tableau de
+        # bord annonçait 4 Ndiguels en cours quand la page des Ndiguels en
+        # montrait 3.
+        all_campaigns = Campaign.objects.filter(en_cours_le(today))
 
         if role == 'admin':
             all_donations = confirmed_qs
@@ -1034,6 +1085,11 @@ class AnalyticsViewSet(viewsets.ViewSet):
                     Donation.PaymentStatus.CONFIRMED,
                 ],
             ).exclude(donor=user)
+        elif role == 'tutelle':
+            # RG007 : les Jëfs faits EN SON NOM portent le tuteur en `donor`
+            # et sa fiche en `beneficiary`. `donor=user` ne lui rendait rien —
+            # la liste des Jëfs avait été corrigée, pas ses statistiques.
+            all_donations = confirmed_qs.filter(Q(donor=user) | Q(beneficiary__linked_user=user))
         else:
             all_donations = confirmed_qs.filter(donor=user)
 
@@ -1075,13 +1131,13 @@ class AnalyticsViewSet(viewsets.ViewSet):
             kpis.append({'title': 'Total Collecté', 'value': f'{int(total_amount):,} FCFA', 'change': change_amount, 'icon': 'Wallet', 'href': '/dashboard/donations'})
             kpis.append({'title': 'Membres Actifs', 'value': str(members_count), 'change': f"{User.objects.filter(status='pending').count()} en attente", 'icon': 'Users', 'href': '/dashboard/admin/users'})
             kpis.append({'title': 'Contributions', 'value': str(donation_count), 'change': change_count, 'icon': 'HandCoins', 'href': '/dashboard/donations'})
-            kpis.append({'title': 'Jëfs Actifs', 'value': str(active_campaigns_count), 'change': 'En cours', 'icon': 'Landmark', 'href': '/dashboard/campaigns'})
+            kpis.append({'title': 'Ndiguels en cours', 'value': str(active_campaigns_count), 'change': 'Ouverts aux Jëfs', 'icon': 'Landmark', 'href': '/dashboard/campaigns'})
         elif role == 'chef_daara':
             daara_members = User.objects.filter(daara=user.daara, status='active').count() if user.daara else 0
             kpis.append({'title': 'Total Daara', 'value': f'{int(total_amount):,} FCFA', 'change': change_amount, 'icon': 'Wallet'})
             kpis.append({'title': 'Talubés', 'value': str(daara_members), 'change': 'Actifs', 'icon': 'Users'})
             kpis.append({'title': 'Contributions', 'value': str(donation_count), 'change': change_count, 'icon': 'HandCoins'})
-            kpis.append({'title': 'Jëfs Actifs', 'value': str(active_campaigns_count), 'change': 'En cours', 'icon': 'Landmark'})
+            kpis.append({'title': 'Ndiguels en cours', 'value': str(active_campaigns_count), 'change': 'Ouverts aux Jëfs', 'icon': 'Landmark'})
         elif role == 'collector':
             # Daté de l'ENCAISSEMENT : une demande faite lundi et ramassée
             # jeudi est une collecte de jeudi.
@@ -1101,7 +1157,7 @@ class AnalyticsViewSet(viewsets.ViewSet):
         else:  # member
             kpis.append({'title': 'Mes Contributions', 'value': f'{int(total_amount):,} FCFA', 'change': change_amount, 'icon': 'Wallet'})
             kpis.append({'title': 'Nombre de dons', 'value': str(donation_count), 'change': change_count, 'icon': 'HandCoins'})
-            kpis.append({'title': 'Jëfs Actifs', 'value': str(active_campaigns_count), 'change': 'En cours', 'icon': 'Landmark'})
+            kpis.append({'title': 'Ndiguels en cours', 'value': str(active_campaigns_count), 'change': 'Ouverts aux Jëfs', 'icon': 'Landmark'})
             kpis.append({'title': 'Tutelles', 'value': str(user.tutelles.count()), 'change': 'Membres', 'icon': 'Users'})
 
         # ── Charts ────────────────────────────────────────────────────────
@@ -1114,14 +1170,16 @@ class AnalyticsViewSet(viewsets.ViewSet):
             .order_by('month')
         )
         months_map = {}
+        # « manual » = les espèces seules : un virement n'est pas de l'argent
+        # remis en main propre, il était pourtant rangé avec.
+        especes = {Donation.PaymentMethod.MANUAL, Donation.PaymentMethod.COLLECTOR}
         for entry in monthly_stats:
-            m_str = entry['month'].strftime('%b')
-            if m_str not in months_map:
-                months_map[m_str] = {'month': m_str, 'online': 0, 'manual': 0}
-            if entry['payment_method'] in ['wave', 'orange_money', 'card', 'bictorys', 'visa', 'mastercard']:
-                months_map[m_str]['online'] += int(entry['total'])
-            else:
-                months_map[m_str]['manual'] += int(entry['total'])
+            mois = entry['month']
+            cle = (mois.year, mois.month)
+            if cle not in months_map:
+                months_map[cle] = {'month': MOIS_COURTS[mois.month - 1], 'online': 0, 'manual': 0}
+            colonne = 'manual' if entry['payment_method'] in especes else 'online'
+            months_map[cle][colonne] += int(entry['total'])
         bar_chart = list(months_map.values())
 
         method_labels = {
@@ -1217,12 +1275,14 @@ class AnalyticsViewSet(viewsets.ViewSet):
                     'id': 'wire_pending', 'title': f"{wire_pending} virement(s) à confirmer",
                     'badge': 'Virement', 'severity': 'critical',
                 })
+            # En cours ET échéance dans la semaine : sans borne basse, l'alerte
+            # comptait les Ndiguels déjà clos depuis des semaines.
             ending_soon = Campaign.objects.filter(
-                status='active', deadline__lte=today + datetime.timedelta(days=7)
+                en_cours_le(today), deadline__lte=today + datetime.timedelta(days=7)
             ).count()
             if ending_soon > 0:
                 alerts.append({
-                    'id': 'ending_soon', 'title': f"{ending_soon} Jëf(s) se terminent dans 7 jours",
+                    'id': 'ending_soon', 'title': f"{ending_soon} Ndiguel(s) se terminent dans 7 jours",
                     'badge': 'Échéance', 'severity': 'info',
                 })
             doc_pending = UserDocument.objects.filter(status='pending').count()

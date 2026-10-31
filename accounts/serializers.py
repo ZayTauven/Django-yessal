@@ -675,6 +675,9 @@ class LoginSerializer(serializers.Serializer):
 class TitleRequestSerializer(serializers.ModelSerializer):
     member_name = serializers.CharField(source='member.get_full_name', read_only=True)
     title_name = serializers.CharField(source='title.name', read_only=True)
+    # Un titre désactivé n'est plus proposé : la liste des titres le masque
+    # déjà aux membres, la demande l'acceptait encore.
+    title = serializers.PrimaryKeyRelatedField(queryset=MemberTitle.objects.filter(is_active=True))
 
     class Meta:
         model = TitleRequest
