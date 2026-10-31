@@ -1,4 +1,3 @@
-from django.test import TestCase
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 from django.utils import timezone
@@ -270,7 +269,7 @@ class DonationArchiveTests(APITestCase):
     def test_list_archives(self):
         """Test listing all archives."""
         # Create an archive
-        archive = DonationArchive.objects.create(
+        DonationArchive.objects.create(
             name='Test Archive',
             description='Test description',
             created_by=self.admin,

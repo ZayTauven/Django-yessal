@@ -1,7 +1,10 @@
+import logging
 import os
 
 from django.utils.deprecation import MiddlewareMixin
 from accounts.models import AuditLog
+
+logger = logging.getLogger(__name__)
 
 
 class PublicHostMiddleware(MiddlewareMixin):
@@ -102,8 +105,8 @@ class AuditMiddleware(MiddlewareMixin):
                             "method": request.method,
                         }
                     )
-                except Exception as e:
+                except Exception:
                     # Don't break the response if logging fails
-                    print(f"Audit logging failed: {e}")
+                    logger.exception("Audit logging failed")
         
         return response

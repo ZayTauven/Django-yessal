@@ -11,7 +11,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
-from comms.notify import administrateurs, nom_de, notify
+from comms.notify import nom_de, notify
 from core.mail import send_to_user
 
 from .models import CashDeposit, Donation, DonationArchive

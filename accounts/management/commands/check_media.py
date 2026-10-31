@@ -21,7 +21,6 @@ sont soignés.
     python manage.py check_media --clean    # vide les champs orphelins
 """
 
-import os
 
 from django.apps import apps
 from django.core.management.base import BaseCommand

@@ -178,7 +178,6 @@ class MessageSerializer(serializers.ModelSerializer):
         message._client_id = client_id
         message.save()
         return message
-        extra_kwargs = {'file': {'write_only': True}}
 
     def validate(self, attrs):
         fichier = attrs.get('file')

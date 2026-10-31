@@ -8,7 +8,6 @@ from rest_framework.response import Response
 
 from accounts.models import User
 from accounts.serializers import DirectoryUserSerializer
-from comms.models import Notification
 from comms.notify import notify, notify_many
 from contributions.models import Donation
 

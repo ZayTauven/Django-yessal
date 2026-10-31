@@ -215,7 +215,6 @@ class CatalogueTests(TestCase):
             self.assertTrue(sujet.strip(), f"sujet vide pour {code}")
 
     def test_les_codes_sont_en_minuscules_avec_underscores(self):
-        import re
 
         for code in SUJETS:
             self.assertRegex(code, r'^[a-z][a-z0-9_]*$', f"code mal formé : {code}")

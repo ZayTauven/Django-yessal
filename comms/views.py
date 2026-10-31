@@ -18,7 +18,6 @@ from .models import (
     FCMToken,
     Message,
     MessageReaction,
-    MessageReadReceipt,
     MessagingPilotageConfig,
     Notification,
     UserMessagingPreferences,

@@ -6,4 +6,4 @@ class ContributionsConfig(AppConfig):
     name = 'contributions'
 
     def ready(self):
-        import contributions.signals
+        import contributions.signals  # noqa: F401 — branche les receveurs
