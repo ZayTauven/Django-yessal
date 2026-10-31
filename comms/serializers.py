@@ -495,12 +495,28 @@ class CreateGroupChatSerializer(serializers.ModelSerializer):
         preset_daara_id = validated_data.pop('preset_daara_id', None)
         campaign_id = validated_data.pop('campaign_id', None)
         title_ids = validated_data.pop('title_ids', None) or []
+        from rest_framework.exceptions import PermissionDenied
+        est_admin = bool(request and request.user.role == User.Role.ADMIN)
         if title_ids:
-            from rest_framework.exceptions import PermissionDenied
             from .audience import normaliser
-            if not request or request.user.role != User.Role.ADMIN:
+            if not est_admin:
                 raise PermissionDenied("Seule l'administration crée un salon par titre.")
             validated_data['audience'] = normaliser({'titles': title_ids})
+
+        # ═══════════════════════════════════════════════════════════════════
+        # Qui peut peupler un salon d'un coup
+        # ═══════════════════════════════════════════════════════════════════
+        # Le web comme le mobile offrent « Tout mon Daara » à chacun : c'est
+        # voulu. Mais rien ne bornait ni le Daara (`daara_id` libre) ni les
+        # modes `global_*` — un talubé versait tous les coordinateurs du Kourel
+        # dans son salon. Les modes globaux et le Daara d'un autre sont
+        # réservés à l'administration.
+        if not est_admin:
+            if invite_mode.startswith('global_'):
+                raise PermissionDenied("Seule l'administration invite à l'échelle du Kourel.")
+            demande = preset_daara_id or daara_id
+            if invite_mode.startswith('daara_') and demande and demande != request.user.daara_id:
+                raise PermissionDenied("Vous ne pouvez inviter que les membres de votre Daara.")
         validated_data['chat_type'] = Chat.ChatType.GROUP
         # Le créateur n'était pas enregistré : `created_by` restait vide, et le
         # droit « créateur du salon » ne s'appliquait jamais.
@@ -538,15 +554,16 @@ class CreateGroupChatSerializer(serializers.ModelSerializer):
             from .audience import synchroniser
             synchroniser(chat)
 
-        # Ajouter les autres membres
-        for uid in member_ids:
-            if request and request.user and int(uid) == request.user.id:
-                continue
-            try:
-                user = User.objects.get(pk=uid)
-                ChatMembership.objects.get_or_create(chat=chat, user=user, defaults={'added_by': request.user if request else None})
-            except User.DoesNotExist:
-                pass
+        # Ajouter les autres membres — ceux que le créateur peut joindre, comme
+        # `add-members` : pilotage et préférences de chacun. La création les
+        # contournait, et qui avait fermé les invitations de groupe s'y
+        # retrouvait quand même.
+        if request and request.user:
+            from .services import joignables
+            member_ids.discard(request.user.id)
+            permis = joignables(request.user, salon=True).filter(pk__in=member_ids)
+            for user in permis:
+                ChatMembership.objects.get_or_create(chat=chat, user=user, defaults={'added_by': request.user})
         return chat
 
 

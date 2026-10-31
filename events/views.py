@@ -69,9 +69,10 @@ class IsCampaignOrganizer(permissions.BasePermission):
     """
     - GET (liste/détail) : ouvert à tous les utilisateurs authentifiés.
     - POST (création)    : **administrateur seul** (UC-06).
-    - PUT/PATCH/DELETE   : réservé à l'organisateur désigné ou admin/chef_daara.
+    - PUT/PATCH/DELETE   : sur une TÂCHE, l'organisateur désigné ou
+      admin/chef_daara ; sur le Ndiguel lui-même, l'organisateur ou l'admin.
 
-    ⚠ La nuance du dernier point est VOULUE et confirmée par le commanditaire :
+    ⚠ La nuance des tâches est VOULUE et confirmée par le commanditaire :
     un chef de Daara suit l'avancement des tâches d'un Ndiguel même s'il n'en
     est pas l'organisateur. Voir `Campaign.can_be_managed_by`.
     """
@@ -87,8 +88,17 @@ class IsCampaignOrganizer(permissions.BasePermission):
     def has_object_permission(self, request, view, obj):
         if request.method in permissions.SAFE_METHODS:
             return True
-        campaign = obj.campaign if hasattr(obj, 'campaign') else obj
-        return campaign.can_be_managed_by(request.user)
+        # Une TÂCHE : la nuance ci-dessus s'applique, tout coordinateur la suit.
+        if hasattr(obj, 'campaign'):
+            return obj.campaign.can_be_managed_by(request.user)
+        # Le Ndiguel LUI-MÊME : l'administration, ou son organisateur désigné.
+        # La nuance des tâches s'étendait à tout l'objet — un coordinateur de
+        # n'importe quel Daara pouvait clore un Ndiguel national, changer son
+        # objectif ou son échéance (arbitrage du 2026-10-31 : tâches seules).
+        user = request.user
+        return user.role == User.Role.ADMIN or (
+            obj.organizer_id == user.id and obj.is_management_open()
+        )
 
 
 class FeteViewSet(viewsets.ModelViewSet):

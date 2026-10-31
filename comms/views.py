@@ -1057,7 +1057,17 @@ class AnnouncementViewSet(viewsets.ModelViewSet):
             raise PermissionDenied(
                 "Vous n'avez pas les droits nécessaires pour publier des annonces."
             )
-        annonce = serializer.save()
+        if self.request.user.role == 'chef_daara':
+            # Un coordinateur parle à SON Daara. Rien ne bornait `target` : une
+            # annonce critique d'un coordinateur partait par courriel et push
+            # à tout le Kourel.
+            if not self.request.user.daara_id:
+                raise PermissionDenied("Votre compte n'est rattaché à aucun Daara.")
+            annonce = serializer.save(
+                target=Announcement.Target.DAARA_ONLY, daara_id=self.request.user.daara_id,
+            )
+        else:
+            annonce = serializer.save()
 
         # ═══════════════════════════════════════════════════════════════════
         # Seules les annonces CRITIQUES partent par courriel

@@ -50,3 +50,32 @@ class EtatTests(APITestCase):
     def test_l_administration_voit_tout(self):
         anonyme = self.lignes(self.admin)['Contributeur anonyme']
         self.assertEqual(anonyme['member_id'], self.modou.id)
+
+
+class NdiguelEnModificationTests(APITestCase):
+    """Un coordinateur suit les tâches d'un Ndiguel, il ne modifie pas le Ndiguel."""
+
+    def setUp(self):
+        actif = {'status': User.Status.ACTIVE}
+        self.admin = User.objects.create_user(email='a@ex.org', password='x', role=User.Role.ADMIN, **actif)
+        self.coordo = User.objects.create_user(email='c@ex.org', password='x', role=User.Role.CHEF_DAARA, **actif)
+        self.camp = Campaign.objects.create(name='Magal', deadline=date.today() + timedelta(days=30), status='active')
+
+    def test_le_coordinateur_ne_clot_pas_un_ndiguel(self):
+        self.client.force_authenticate(self.coordo)
+        r = self.client.patch(f'/api/events/campaigns/{self.camp.id}/', {'status': 'closed'}, format='json')
+        self.assertEqual(r.status_code, 403)
+        self.camp.refresh_from_db()
+        self.assertEqual(self.camp.status, 'active')
+
+    def test_le_coordinateur_garde_les_taches(self):
+        from events.models import CampaignTodo
+        tache = CampaignTodo.objects.create(campaign=self.camp, title='Réserver les cars')
+        self.client.force_authenticate(self.coordo)
+        r = self.client.patch(f'/api/events/campaign-todos/{tache.id}/', {'is_completed': True}, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+
+    def test_l_administration_modifie(self):
+        self.client.force_authenticate(self.admin)
+        r = self.client.patch(f'/api/events/campaigns/{self.camp.id}/', {'name': 'Magal de Touba'}, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
