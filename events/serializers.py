@@ -54,9 +54,28 @@ class FeteSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Le jour hégirien va de 1 à 30.")
         return value
 
+    #: La durée d'une période, en jours, au plus court (un trimestre peut
+    #: n'en compter que 89, une année hégirienne 354).
+    PERIODE_JOURS = {
+        Fete.Recurrence.WEEKLY: 7,
+        Fete.Recurrence.QUARTERLY: 89,
+        Fete.Recurrence.ANNUAL: 365,
+        Fete.Recurrence.ANNUAL_HIJRI: 354,
+    }
+
     def validate(self, attrs):
         attrs = super().validate(attrs)
         get = lambda k: attrs.get(k, getattr(self.instance, k, None))
+        # Une collecte plus longue que la période déborderait sur l'édition
+        # suivante : 6 jours avant et 1 après font 8 jours pour un hebdomadaire.
+        periode = self.PERIODE_JOURS.get(get('recurrence'))
+        duree = (get('ouvre_jours_avant') or 0) + (get('ferme_jours_apres') or 0) + 1
+        if periode and duree > periode:
+            raise serializers.ValidationError({'ouvre_jours_avant': (
+                f"La collecte durerait {duree} jours pour une période de {periode} : elle "
+                "déborderait sur l'édition suivante. Pour un hebdomadaire, 6 et 0 donnent "
+                "une semaine pleine."
+            )})
         if get('auto_editions'):
             hijri = get('recurrence') == Fete.Recurrence.ANNUAL_HIJRI and get('hijri_mois') and get('hijri_jour')
             if not get('date') and not hijri:

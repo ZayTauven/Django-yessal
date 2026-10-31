@@ -139,7 +139,14 @@ class FeteViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         previous = self.get_object()
         previous_date = previous.date
+        fenetre_avant = (previous.ouvre_jours_avant, previous.ferme_jours_apres)
         fete = serializer.save()
+
+        # Les éditions encore utiles suivent la nouvelle fenêtre, sans jamais
+        # en chevaucher une autre (voir `editions.realigner`).
+        if (fete.ouvre_jours_avant, fete.ferme_jours_apres) != fenetre_avant:
+            from .editions import realigner
+            realigner(fete, timezone.localdate())
 
         # Notify community only when the fete date changes.
         if previous_date == fete.date or fete.date is None:

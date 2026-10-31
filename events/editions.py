@@ -43,6 +43,62 @@ def nom_edition(fete, occurrence: date) -> str:
     return f"{fete.name} — {date_longue(occurrence)}"
 
 
+def fenetre_sans_chevauchement(fete, occurrence: date, exclure=None) -> tuple[date, date]:
+    """La fenêtre d'une édition, qui n'ouvre jamais avant la clôture de la précédente.
+
+    `fenetre` seule ne regarde que la règle de la série. Quand l'administration
+    change cette règle (1/1 → 6/0 sur le Toggou), l'édition déjà ouverte garde
+    son ancienne clôture et la suivante, calculée avec la nouvelle, s'ouvrait le
+    même jour : deux Toggou « En cours » ensemble, et des membres qui ne
+    savaient plus à quelle semaine rattacher leur Jëf. L'ouverture est donc
+    repoussée au lendemain de la clôture précédente.
+    """
+    ouverture, cloture = fenetre(fete, occurrence)
+    return _apres_la_precedente(fete, occurrence, ouverture, cloture, exclure), cloture
+
+
+def _apres_la_precedente(fete, occurrence, ouverture, cloture, exclure=None) -> date:
+    """`ouverture`, repoussée au lendemain de la clôture de l'édition précédente."""
+    precedente = (
+        Campaign.objects.filter(fete=fete, occurrence_date__lt=occurrence)
+        .exclude(pk=getattr(exclure, 'pk', None))
+        .order_by('-occurrence_date')
+        .values_list('deadline', flat=True)
+        .first()
+    )
+    if precedente and ouverture <= precedente:
+        return min(precedente + timedelta(days=1), cloture)
+    return ouverture
+
+
+def realigner(fete, aujourd_hui: date) -> list[Campaign]:
+    """Les éditions encore utiles suivent la fenêtre de la série. Rend celles déplacées.
+
+    Une édition pas encore ouverte prend la nouvelle fenêtre entière. Une
+    édition déjà ouverte garde ses dates — des Jëfs y sont peut-être déjà
+    rattachés — sauf son ouverture, repoussée si elle chevauche la précédente.
+    Les éditions closes ne bougent jamais.
+    """
+    deplacees = []
+    editions = Campaign.objects.filter(
+        fete=fete, occurrence_date__isnull=False, deadline__gte=aujourd_hui,
+    ).order_by('occurrence_date')
+    for edition in editions:
+        if edition.opens_on and edition.opens_on <= aujourd_hui:
+            # Déjà ouverte : ses dates restent, on ne fait que supprimer le
+            # chevauchement — appliquer la nouvelle règle pourrait refermer
+            # une collecte en cours (6/0 → 1/1 repousserait son ouverture).
+            cloture = edition.deadline
+            ouverture = _apres_la_precedente(fete, edition.occurrence_date, edition.opens_on, cloture, edition)
+        else:
+            ouverture, cloture = fenetre_sans_chevauchement(fete, edition.occurrence_date, exclure=edition)
+        if (ouverture, cloture) != (edition.opens_on, edition.deadline):
+            edition.opens_on, edition.deadline = ouverture, cloture
+            edition.save(update_fields=['opens_on', 'deadline', 'updated_at'])
+            deplacees.append(edition)
+    return deplacees
+
+
 def creer_edition(fete, occurrence: date) -> tuple[Campaign, bool]:
     """L'édition de cette occurrence : celle qui existe, ou une nouvelle.
 
@@ -53,7 +109,7 @@ def creer_edition(fete, occurrence: date) -> tuple[Campaign, bool]:
     if existante:
         return existante, False
 
-    ouverture, cloture = fenetre(fete, occurrence)
+    ouverture, cloture = fenetre_sans_chevauchement(fete, occurrence)
     hegirien = fete.recurrence == Fete.Recurrence.ANNUAL_HIJRI
     try:
         with transaction.atomic():
@@ -128,7 +184,7 @@ def confirmer_date(edition: Campaign, occurrence: date) -> Campaign:
     autre = Campaign.objects.filter(fete=edition.fete, occurrence_date=occurrence).exclude(pk=edition.pk)
     if autre.exists():
         raise ValueError("Une autre édition de cette série porte déjà cette date.")
-    ouverture, cloture = fenetre(edition.fete, occurrence)
+    ouverture, cloture = fenetre_sans_chevauchement(edition.fete, occurrence, exclure=edition)
     edition.occurrence_date = occurrence
     edition.opens_on = ouverture
     edition.deadline = cloture
