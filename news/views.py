@@ -1,4 +1,6 @@
+from django.db import transaction
 from rest_framework import filters, permissions, viewsets, status
+from rest_framework.exceptions import ValidationError
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -28,11 +30,20 @@ class NewsPostViewSet(viewsets.ModelViewSet):
         return qs.filter(is_published=True)
 
     def perform_create(self, serializer):
-        post = serializer.save(created_by=self.request.user)
-        # Handle multiple gallery images if provided during creation
-        gallery_images = self.request.FILES.getlist('gallery_images')
-        for image in gallery_images:
-            NewsGalleryImage.objects.create(post=post, image=image)
+        # Les photos de galerie passent par leur sérialiseur, AVANT l'article :
+        # `objects.create` sautait la limite de taille et le contrôle d'image
+        # (n'importe quel fichier, servi ensuite depuis /media/), et une photo
+        # refusée ne laisse pas derrière elle un article à moitié créé.
+        photos = []
+        for image in self.request.FILES.getlist('gallery_images'):
+            photo = NewsGalleryImageSerializer(data={'image': image})
+            if not photo.is_valid():
+                raise ValidationError({'gallery_images': photo.errors.get('image', photo.errors)})
+            photos.append(photo)
+        with transaction.atomic():
+            post = serializer.save(created_by=self.request.user)
+            for photo in photos:
+                photo.save(post=post)
 
     @action(detail=True, methods=['post'])
     def gallery(self, request, *args, **kwargs):

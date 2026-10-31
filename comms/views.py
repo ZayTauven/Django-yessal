@@ -534,9 +534,12 @@ class ChatViewSet(viewsets.ModelViewSet):
         """
         chat = self.get_object()
         membre = ChatMembership.objects.filter(chat=chat, user=request.user).first()
+        # Dans un salon : ses modérateurs (le créateur l'est d'office). Le
+        # créateur SEUL épinglait : un modérateur nommé gérait les membres
+        # mais ne pouvait pas mettre une consigne en tête du fil.
         permis = request.user.role == User.Role.ADMIN or (
             chat.chat_type == Chat.ChatType.CHANNEL and membre is not None and membre.can_post
-        ) or (chat.chat_type == Chat.ChatType.GROUP and chat.created_by_id == request.user.id)
+        ) or (chat.chat_type == Chat.ChatType.GROUP and peut_moderer(request.user, chat, membre))
         if not permis:
             raise PermissionDenied("Vous ne pouvez pas épingler dans ce fil.")
         message_id = request.data.get('message_id')
@@ -592,6 +595,10 @@ class MessageViewSet(viewsets.ModelViewSet):
         message = self.get_object()
         if message.sender_id != request.user.id:
             raise PermissionDenied("Vous ne pouvez modifier que vos propres messages.")
+        # Un fil archivé est en lecture seule : on n'y écrit plus, on n'y
+        # réécrit pas non plus ce qui y figure.
+        if message.chat.archived_at:
+            raise PermissionDenied("Ce fil est archivé : il est en lecture seule.")
         if message.is_deleted or message.message_type != Message.MessageType.TEXT:
             raise ValidationError("Ce message ne peut pas être modifié.")
         texte = (request.data.get('content') or '').strip()
@@ -666,9 +673,21 @@ class MessageViewSet(viewsets.ModelViewSet):
         )
 
     def destroy(self, request, *args, **kwargs):
-        """Soft delete d'un message."""
+        """Soft delete d'un message.
+
+        L'auteur, l'administration, et les modérateurs d'un salon — qui
+        retiraient un membre mais pas un message déplacé qu'il avait laissé.
+        Rien ne se retire dans un fil archivé (lecture seule), sauf par l'admin.
+        """
         message = self.get_object()
-        if message.sender != request.user and request.user.role != User.Role.ADMIN:
+        chat = message.chat
+        admin = request.user.role == User.Role.ADMIN
+        if chat.archived_at and not admin:
+            raise PermissionDenied("Ce fil est archivé : il est en lecture seule.")
+        moderateur = chat.chat_type == Chat.ChatType.GROUP and peut_moderer(
+            request.user, chat, chat.memberships.filter(user=request.user).first(),
+        )
+        if message.sender != request.user and not admin and not moderateur:
             raise PermissionDenied("Vous ne pouvez pas supprimer ce message.")
 
         message.is_deleted = True
@@ -687,6 +706,8 @@ class MessageViewSet(viewsets.ModelViewSet):
             raise ValidationError("Le champ emoji est requis.")
         if message.is_deleted or message.message_type == Message.MessageType.SYSTEM:
             raise ValidationError("On ne réagit pas à ce message.")
+        if message.chat.archived_at:
+            raise PermissionDenied("Ce fil est archivé : il est en lecture seule.")
 
         reaction, created = MessageReaction.objects.get_or_create(
             message=message,
@@ -783,6 +804,22 @@ class ChatInvitationViewSet(viewsets.ModelViewSet):
 
         invitation = serializer.save(sender=self.request.user, recipient=recipient)
 
+        # Pilotage « accepter / refuser les invitations » coupé pour le
+        # destinataire : l'invitation ne lui est pas soumise, la discussion
+        # s'ouvre d'office (règle de `AGENTS/messaging-integration-guide.md`).
+        # Le réglage existait, rien ne le lisait.
+        if not get_effective_config(recipient).allow_invite_accept_decline:
+            with transaction.atomic():
+                self._ouvrir_tete_a_tete(invitation)
+            notify(
+                recipient,
+                code='invitation_salon',
+                titre='Nouvelle discussion',
+                message=f'{nom_de(self.request.user)} a ouvert une discussion avec vous.',
+                courriel=False,
+            )
+            return
+
         salon = getattr(invitation.chat, 'name', '') or 'une discussion'
         notify(
             recipient,
@@ -802,6 +839,15 @@ class ChatInvitationViewSet(viewsets.ModelViewSet):
         if invitation.status != ChatInvitation.Status.PENDING:
             raise ValidationError("Cette invitation n'est plus en attente.")
 
+        chat = self._ouvrir_tete_a_tete(invitation)
+        return Response({
+            'detail': 'Invitation acceptée.',
+            'chat': ChatSerializer(chat, context={'request': request}).data
+        })
+
+    @staticmethod
+    def _ouvrir_tete_a_tete(invitation):
+        """Accepte l'invitation et rend le tête-à-tête, existant ou neuf."""
         # Marquer l'invitation comme acceptée
         invitation.status = ChatInvitation.Status.ACCEPTED
         invitation.save()
@@ -828,11 +874,7 @@ class ChatInvitationViewSet(viewsets.ModelViewSet):
         ChatInvitation.objects.filter(
             sender=invitation.recipient, recipient=invitation.sender, status=ChatInvitation.Status.PENDING,
         ).update(status=ChatInvitation.Status.ACCEPTED, chat=chat)
-
-        return Response({
-            'detail': 'Invitation acceptée.',
-            'chat': ChatSerializer(chat, context={'request': request}).data
-        })
+        return chat
 
     @action(detail=True, methods=['post'], url_path='decline')
     def decline_invitation(self, request, pk=None):
