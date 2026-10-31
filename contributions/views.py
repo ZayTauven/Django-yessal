@@ -276,9 +276,22 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
         if beneficiaire and beneficiaire.tutor_id != donor.pk:
             raise ValidationError({'beneficiary': ["Cette tutelle n'est pas portée par le donateur."]})
 
+        # Un seul choix pour le donateur depuis le 2026-10-31 : « Rester
+        # anonyme ». Tout autre Jëf peut être nommé dans « Les Jëfs du
+        # Kourel », si l'administration l'y affiche (`Chat.show_names`).
+        # Un client qui envoie encore la case « Afficher mon nom dans le
+        # canal » (l'application mobile déjà installée) garde sa réponse : on
+        # tient la promesse que son écran lui a faite.
+        anonyme = bool(serializer.validated_data.get('is_anonymous', False))
+        if 'public_in_channel' in self.request.data:
+            nommable = bool(serializer.validated_data.get('public_in_channel')) and not anonyme
+        else:
+            nommable = not anonyme
+
         extra_kwargs = {
             'donor': donor,
             'payment_status': Donation.PaymentStatus.PENDING,
+            'public_in_channel': nommable,
         }
         if pour_autrui:
             extra_kwargs['collector'] = user

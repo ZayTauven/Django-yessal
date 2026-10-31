@@ -43,6 +43,9 @@ CAMPAIGN_CREATOR_ROLES = ('admin',)
 #: l'affichage (`yessal-mobile/lib/roles.ts`, `AMOUNT_ROLES`).
 ROLES_MONTANTS = {User.Role.ADMIN, User.Role.CHEF_DAARA, User.Role.COLLECTOR, User.Role.GUIDE}
 
+#: Les rôles qui voient QUI se cache derrière un Jëf anonyme.
+ROLES_ANONYMAT_LEVE = {User.Role.ADMIN, User.Role.GUIDE}
+
 
 def _masquer_contribution(ligne, don, user):
     """Ce que `/etat/` laisse voir d'un Jëf, selon qui regarde.
@@ -54,13 +57,22 @@ def _masquer_contribution(ligne, don, user):
     de quoi retrouver le donateur.
 
     - un talubé ne voit que le montant de SON propre Jëf ;
-    - un Jëf anonyme ne dit ni qui ni d'où, sauf à l'administration.
+    - un Jëf anonyme ne dit ni qui ni d'où, sauf à l'administration et à
+      Sangue Bi. Eux voient le vrai nom avec `anonymous_revealed` : l'écran
+      pose l'étiquette « Anonyme », pour que personne ne cite ce donateur —
+      dans un « Top 3 » annoncé au Kourel, par exemple (2026-10-31). Ils
+      voyaient jusqu'ici « Contributeur anonyme » comme tout le monde.
     """
     if user.role not in ROLES_MONTANTS and don.donor_id != user.id:
         ligne['amount'] = None
-    if don.is_anonymous and user.role != User.Role.ADMIN:
-        ligne['member_id'] = None
-        ligne['daara_name'] = None
+    ligne['anonymous_revealed'] = False
+    if don.is_anonymous:
+        if user.role in ROLES_ANONYMAT_LEVE:
+            ligne['anonymous_revealed'] = True
+        else:
+            ligne['member_name'] = 'Contributeur anonyme'
+            ligne['member_id'] = None
+            ligne['daara_name'] = None
     return ligne
 
 
@@ -205,7 +217,9 @@ class FeteViewSet(viewsets.ModelViewSet):
         contributions = []
         for d in donations:
             donor_name = d.donor.get_full_name().strip() if d.donor else ''
-            member_name = 'Contributeur anonyme' if d.is_anonymous else (donor_name or getattr(d.donor, 'email', '') or getattr(d.donor, 'phone', '') or str(d.donor_id))
+            # Le vrai nom, toujours : `_masquer_contribution` le remplace par
+            # « Contributeur anonyme » pour qui ne doit pas le voir.
+            member_name = donor_name or getattr(d.donor, 'email', '') or getattr(d.donor, 'phone', '') or str(d.donor_id)
             contributions.append(_masquer_contribution({
                 'member_name': member_name,
                 'member_id': d.donor_id,
@@ -431,7 +445,7 @@ class CampaignViewSet(viewsets.ModelViewSet):
         contributions = []
         for d in donations.order_by('-created_at'):
             donor_name = d.donor.get_full_name().strip() if d.donor else ''
-            member_name = 'Contributeur anonyme' if d.is_anonymous else (donor_name or d.donor.email or d.donor.phone)
+            member_name = donor_name or d.donor.email or d.donor.phone
             contributions.append(_masquer_contribution(
                 {
                     'member_name': member_name,

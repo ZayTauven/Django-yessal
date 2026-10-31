@@ -106,7 +106,9 @@ class CarteDeJefTests(Base):
         carte = Message.objects.get(chat=self.jefs, payload__donation_id=don.id)
         self.assertEqual(carte.message_type, Message.MessageType.CARD)
         self.assertNotIn('Awa', carte.content)
-        self.assertIsNone(carte.payload['donor'])
+        # Ancien Jëf sans consentement : rien de nominatif, même côté serveur.
+        self.assertNotIn('donor', carte.payload)
+        self.assertNotIn('text_named', carte.payload)
         self.assertIn('Magal 18 Safar', carte.content)
         self.assertNotIn('12345', carte.content + str(carte.payload))
         self.assertNotIn('12 345', carte.content)
@@ -117,7 +119,10 @@ class CarteDeJefTests(Base):
         self.awa.save()
         don = self.jef(public_in_channel=True)
         carte = Message.objects.get(chat=self.jefs, payload__donation_id=don.id)
-        self.assertIn('Awa', carte.content)
+        # Les deux versions sont prêtes ; le texte enregistré reste discret,
+        # le sérialiseur choisit selon `show_names` (tests_jefs_noms).
+        self.assertIn('Awa', carte.payload['text_named'])
+        self.assertNotIn('Awa', carte.content)
         self.assertEqual(carte.payload['donor']['title'], 'AMIR')
 
     def test_une_seule_carte_par_jef(self):

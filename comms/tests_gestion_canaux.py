@@ -214,13 +214,19 @@ class MontantsTests(Base):
         self.assertEqual(carte.payload['amount'], 25000)
         self.assertNotIn('amount', self.payload(carte))
         jefs = canal('jefs')
+        # La migration 0015 active les noms sur le canal existant : on part ici
+        # d'un canal qui ne nomme personne.
+        self.client.patch(f'/api/comms/{jefs.pk}/settings/', {'show_names': False}, format='json')
         self.client.patch(f'/api/comms/{jefs.pk}/settings/', {'show_amounts': True}, format='json')
+        # Le montant ne s'affiche que sur une carte NOMMÉE.
+        self.assertNotIn('amount', self.payload(carte))
+        self.client.patch(f'/api/comms/{jefs.pk}/settings/', {'show_names': True}, format='json')
         self.assertEqual(self.payload(carte)['amount'], 25000)
 
     def test_un_jef_anonyme_n_a_jamais_de_montant(self):
         carte = self.jef(public=False)
         self.assertNotIn('amount', carte.payload)
-        Chat.objects.filter(pk=canal('jefs').pk).update(show_amounts=True)
+        Chat.objects.filter(pk=canal('jefs').pk).update(show_amounts=True, show_names=True)
         self.assertNotIn('amount', self.payload(carte))
 
     def test_l_interrupteur_n_existe_que_sur_le_canal_des_jefs(self):

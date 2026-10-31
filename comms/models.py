@@ -37,8 +37,11 @@ class Chat(models.Model):
     audience = models.JSONField(null=True, blank=True)
     # Un canal sonne-t-il sur les téléphones à chaque publication ?
     push_enabled = models.BooleanField(default=True)
-    # « Les Jëfs du Kourel » : montrer le montant des Jëfs dont le donateur a
-    # accepté d'être nommé. Jamais celui d'un Jëf anonyme.
+    # « Les Jëfs du Kourel » : nommer les donateurs, et montrer leur montant.
+    # L'administration en décide (2026-10-31) ; un Jëf anonyme, ou ancien et
+    # fait sans accepter d'être nommé, ne montre jamais ni l'un ni l'autre.
+    # Le montant ne s'affiche que sur une carte nommée.
+    show_names = models.BooleanField(default=False)
     show_amounts = models.BooleanField(default=False)
     # Clé d'une icône d'une liste fermée (`audience.ICONES`), dessinée par les
     # clients ; vide : l'icône par défaut du type de fil.

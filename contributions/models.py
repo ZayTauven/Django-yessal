@@ -110,11 +110,15 @@ class Donation(models.Model):
         help_text='Daara du membre bénéficiaire',
     )
     amount = models.DecimalField(max_digits=15, decimal_places=2)
+    # « Rester anonyme » : ni nom ni montant, nulle part — sauf pour
+    # l'administration et Sangue Bi, qui voient l'étiquette « Anonyme ».
     is_anonymous = models.BooleanField(default=False)
-    # Consentement EXPLICITE à voir son nom dans le canal « Les Jëfs du
-    # Kourel ». Distinct d'`is_anonymous` (classements internes, `False` par
-    # défaut) : réutiliser celui-là aurait publié le nom de tous les donateurs
-    # passés, qui n'avaient rien accepté de tel. Jamais de montant, dans aucun cas.
+    # Le Jëf peut-il être nommé dans « Les Jëfs du Kourel » ? Posé par le
+    # SERVEUR depuis le 2026-10-31 (`DonationViewSet.perform_create`) : vrai
+    # pour tout Jëf non anonyme. Il était auparavant un consentement coché à
+    # part ; les Jëfs anciens qui ne l'avaient pas restent donc discrets, quoi
+    # que l'administration affiche. Nommer, puis montrer le montant, reste le
+    # choix de l'administration (`Chat.show_names`, `Chat.show_amounts`).
     public_in_channel = models.BooleanField(default=False)
     payment_method = models.CharField(max_length=20, choices=PaymentMethod.choices, default=PaymentMethod.MANUAL)
     payment_status = models.CharField(max_length=20, choices=PaymentStatus.choices, default=PaymentStatus.PENDING)

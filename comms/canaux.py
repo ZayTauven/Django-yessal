@@ -7,9 +7,10 @@ Deux canaux, globaux (décisions du 2026-10-29)
   (`ChatMembership.can_post`) y publient ; tous lisent et réagissent ; chaque
   annonce part en push.
 - **Les Jëfs du Kourel** — personne n'y écrit : le serveur y pose une carte à
-  chaque Jëf confirmé. Le nom n'y figure que si le donateur l'a choisi
-  (`Donation.public_in_channel`), le montant JAMAIS. Pas de push : un Jëf par
-  minute le jour d'un Magal ferait vibrer chaque téléphone sans relâche.
+  chaque Jëf confirmé. Nom et montant n'y figurent que si l'administration
+  les affiche (`Chat.show_names`, `Chat.show_amounts`, 2026-10-31), et
+  jamais pour un Jëf anonyme. Pas de push : un Jëf par minute le jour d'un
+  Magal ferait vibrer chaque téléphone sans relâche.
 
 ═══════════════════════════════════════════════════════════════════════════
 Pourquoi des cartes qui ne se ressemblent pas
@@ -104,27 +105,37 @@ def composer_carte(donation, rang):
 
     donor = donation.donor
     ndiguel = donation.campaign.name
-    public = bool(donation.public_in_channel)
+    # Nommable : ni anonyme, ni ancien Jëf fait sans accepter d'être nommé
+    # (`public_in_channel`, que le serveur pose désormais seul — voir
+    # `DonationViewSet.perform_create`). Nommable ne veut pas dire nommé :
+    # l'administration l'active sur le canal (`Chat.show_names`), et c'est le
+    # sérialiseur qui choisit l'une des deux versions de la carte.
+    public = bool(donation.public_in_channel) and not donation.is_anonymous
     graine = donation.pk or 0
 
+    daara = getattr(donor, 'daara', None)
+    qui = f"Un talubé du Daara {daara.name}" if daara else "Un membre du Kourel"
+    discret = PHRASES_ANONYMES[graine % len(PHRASES_ANONYMES)].format(qui=qui, ndiguel=ndiguel)
+    nomme = None
     if public:
         nom = nom_de(donor)
         prenom = (donor.first_name or '').strip() or nom
-        texte = PHRASES_NOMMEES[graine % len(PHRASES_NOMMEES)].format(nom=nom, prenom=prenom, ndiguel=ndiguel)
-    else:
-        daara = getattr(donor, 'daara', None)
-        qui = f"Un talubé du Daara {daara.name}" if daara else "Un membre du Kourel"
-        texte = PHRASES_ANONYMES[graine % len(PHRASES_ANONYMES)].format(qui=qui, ndiguel=ndiguel)
+        nomme = PHRASES_NOMMEES[graine % len(PHRASES_NOMMEES)].format(nom=nom, prenom=prenom, ndiguel=ndiguel)
 
     if rang in PALIERS or (rang >= 1000 and rang % 500 == 0):
         illustration = {'variant': 'palier', 'milestone': rang}
-        texte = f"{rang}e Jëf pour {ndiguel}. Alhamdoulillah !"
+        discret = f"{rang}e Jëf pour {ndiguel}. Alhamdoulillah !"
+        nomme = discret if public else None
     elif _hors_senegal(donor) and graine % 2 == 0:
         # Une fois sur deux seulement : dans un Kourel où la diaspora donne
         # beaucoup, la même carte turquoise revenait six fois sur dix.
         illustration = {'variant': 'diaspora', 'picto': 'diaspora', 'tone': 'teal'}
-        phrases = PHRASES_DIASPORA_NOMMEES if public else PHRASES_DIASPORA_ANONYMES
-        texte = phrases[(graine // 2) % len(phrases)].format(nom=nom_de(donor), ndiguel=ndiguel)
+        rang_phrase = (graine // 2)
+        discret = PHRASES_DIASPORA_ANONYMES[rang_phrase % len(PHRASES_DIASPORA_ANONYMES)].format(
+            nom=nom_de(donor), ndiguel=ndiguel)
+        if public:
+            nomme = PHRASES_DIASPORA_NOMMEES[rang_phrase % len(PHRASES_DIASPORA_NOMMEES)].format(
+                nom=nom_de(donor), ndiguel=ndiguel)
     elif graine % 3 == 0 and donation.campaign.illustrative_photo:
         illustration = {'variant': 'photo', 'photo_url': donation.campaign.illustrative_photo.url}
     else:
@@ -144,16 +155,19 @@ def composer_carte(donation, rang):
             avatar = None
         auteur = {'id': donor.pk, 'name': nom_de(donor), 'title': titre, 'avatar': avatar}
 
-    return texte, {
+    # Le texte enregistré dans le message est la version DISCRÈTE : c'est elle
+    # que lisent l'aperçu de la liste des fils et tout lecteur qui ignorerait
+    # le choix de l'administration. La version nommée, le donateur et le
+    # montant ne quittent le serveur que par `MessageSerializer`.
+    return discret, {
         'kind': 'jef',
         'donation_id': donation.pk,
         'campaign_id': donation.campaign_id,
         'campaign_name': ndiguel,
-        'donor': auteur,
-        # Le montant, SEULEMENT si le donateur a accepté d'être nommé ; il ne
-        # quitte le serveur que si l'administration l'affiche sur le canal
-        # (`MessageSerializer.to_representation`). Un Jëf anonyme n'en a pas.
-        **({'amount': int(donation.amount)} if public else {}),
+        'text_discreet': discret,
+        # Rien de nominatif pour un Jëf qui ne peut pas être nommé : ni nom,
+        # ni montant, même enregistrés côté serveur.
+        **({'text_named': nomme, 'donor': auteur, 'amount': int(donation.amount)} if public else {}),
         **illustration,
     }
 

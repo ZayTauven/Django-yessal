@@ -161,15 +161,34 @@ class MessageSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        # Le montant d'un Jëf ne quitte le serveur que si l'administration l'a
-        # activé sur ce canal ; la carte n'en porte de toute façon que lorsque
-        # le donateur a accepté d'être nommé (`canaux.composer_carte`). Retiré
-        # ICI et pas à l'affichage : un client ne reçoit jamais ce qu'il ne
-        # doit pas montrer.
         payload = data.get('payload')
-        if isinstance(payload, dict) and 'amount' in payload and not instance.chat.show_amounts:
-            data['payload'] = {k: v for k, v in payload.items() if k != 'amount'}
+        if isinstance(payload, dict) and payload.get('kind') == 'jef':
+            self._carte_de_jef(data, payload, instance.chat)
         return data
+
+    @staticmethod
+    def _carte_de_jef(data, payload, chat):
+        """La version d'une carte de Jëf que ce canal montre, choisie ICI.
+
+        `canaux.composer_carte` enregistre une version discrète et, pour un
+        Jëf nommable, une version nommée avec le donateur et le montant. Le
+        nom ne sort que si l'administration l'affiche (`show_names`), le
+        montant que sur une carte nommée et si elle l'affiche aussi
+        (`show_amounts`) : « Afficher les montants » restait sans effet tant
+        que le donateur n'avait pas coché une case que presque personne ne
+        cochait. Retiré au serveur, pas à l'écran : un client ne reçoit
+        jamais ce qu'il ne doit pas montrer.
+        """
+        nominatif = ('text_named', 'text_discreet', 'donor', 'amount')
+        carte = {k: v for k, v in payload.items() if k not in nominatif}
+        if payload.get('text_named') and chat.show_names:
+            data['content'] = payload['text_named']
+            carte['donor'] = payload.get('donor')
+            if chat.show_amounts and 'amount' in payload:
+                carte['amount'] = payload['amount']
+        elif payload.get('text_discreet'):
+            data['content'] = payload['text_discreet']
+        data['payload'] = carte
 
     def create(self, validated_data):
         client_id = validated_data.pop('client_id', None)
@@ -262,7 +281,7 @@ class ChatSerializer(serializers.ModelSerializer):
             'unread_count', 'members_count', 'is_muted', 'peer_id',
             'peer_last_read_at', 'last_activity_at', 'daara', 'campaign',
             'created_by', 'created_at', 'channel_kind', 'description', 'can_post',
-            'can_moderate', 'audience', 'push_enabled', 'show_amounts', 'icon',
+            'can_moderate', 'audience', 'push_enabled', 'show_names', 'show_amounts', 'icon',
             'archived_at', 'pinned_message', 'is_system',
         ]
 

@@ -488,7 +488,7 @@ class ChatViewSet(viewsets.ModelViewSet):
     def update_settings(self, request, pk=None):
         """Réglages d'un canal (ou d'un salon par titre). Administration seulement.
 
-        `name`, `description`, `icon`, `push_enabled` ; `show_amounts` sur
+        `name`, `description`, `icon`, `push_enabled` ; `show_names` et `show_amounts` sur
         « Les Jëfs du Kourel » ; `audience` sur un canal créé par
         l'administration ou un salon par titre — jamais sur un canal fondateur.
         """
@@ -519,11 +519,12 @@ class ChatViewSet(viewsets.ModelViewSet):
                 raise ValidationError({'push_enabled': "Réglage réservé aux canaux."})
             chat.push_enabled = bool(data.get('push_enabled'))
             champs.append('push_enabled')
-        if 'show_amounts' in data:
-            if chat.channel_kind != Chat.ChannelKind.JEFS:
-                raise ValidationError({'show_amounts': "Réglage propre à « Les Jëfs du Kourel »."})
-            chat.show_amounts = bool(data.get('show_amounts'))
-            champs.append('show_amounts')
+        for reglage in ('show_names', 'show_amounts'):
+            if reglage in data:
+                if chat.channel_kind != Chat.ChannelKind.JEFS:
+                    raise ValidationError({reglage: "Réglage propre à « Les Jëfs du Kourel »."})
+                setattr(chat, reglage, bool(data.get(reglage)))
+                champs.append(reglage)
         resynchroniser = False
         if 'audience' in data:
             if chat.channel_kind:
