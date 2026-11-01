@@ -48,8 +48,10 @@ class EtatTests(APITestCase):
         self.assertEqual(int(anonyme['amount']), 20000)
 
     def test_l_administration_voit_tout(self):
-        anonyme = self.lignes(self.admin)['Contributeur anonyme']
+        # Le vrai nom, étiqueté « Anonyme » à l'écran (décision du 2026-10-31).
+        anonyme = self.lignes(self.admin)['Modou']
         self.assertEqual(anonyme['member_id'], self.modou.id)
+        self.assertTrue(anonyme['anonymous_revealed'])
 
 
 class NdiguelEnModificationTests(APITestCase):
