@@ -2,6 +2,26 @@ from django.contrib.auth import get_user_model
 from rest_framework import serializers
 from .models import CashDeposit, Donation
 
+
+def voit_le_donateur(user, don):
+    """Qui voit QUI a fait un Jëf anonyme (règle du 2026-10-31).
+
+    L'administration et Sangue Bi, avec l'étiquette « Anonyme » ; le donateur
+    lui-même ; et ceux qui manient l'argent en main propre : le collecteur du
+    Jëf, un collecteur devant une demande de sa zone, ou le coordinateur
+    devant une demande de collecte de son Daara — ils doivent appeler le
+    membre et le rencontrer. Un coordinateur lisait jusqu'ici le nom de tous
+    les anonymes de son Daara dans « Les Jëfs ».
+    """
+    Role = get_user_model().Role
+    if user.role in (Role.ADMIN, Role.GUIDE) or user.pk in (don.donor_id, don.collector_id):
+        return True
+    demande_de_collecte = (
+        don.payment_method == Donation.PaymentMethod.MANUAL
+        and don.payment_status == Donation.PaymentStatus.PENDING
+    )
+    return user.role == Role.COLLECTOR or (user.role == Role.CHEF_DAARA and demande_de_collecte)
+
 class DonationSerializer(serializers.ModelSerializer):
     # 🔴 Champ OBLIGATOIRE depuis mai 2026, par défaut de `ModelSerializer`
     # sur une clé étrangère non nulle. Or ni le mobile (champ absent) ni le web
@@ -29,6 +49,16 @@ class DonationSerializer(serializers.ModelSerializer):
     beneficiary_name = serializers.SerializerMethodField()
     collector_name = serializers.ReadOnlyField(source='collector.get_full_name')
     validated_by_name = serializers.ReadOnlyField(source='validated_by.get_full_name')
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        if instance.is_anonymous and request is not None and not voit_le_donateur(request.user, instance):
+            data.update({
+                'donor': None, 'donor_name': 'Contributeur anonyme', 'donor_phone': None,
+                'donor_daara_name': None, 'donor_ldd_name': None, 'beneficiary_name': None,
+            })
+        return data
 
     def get_beneficiary_name(self, obj):
         """Nom COMPLET de la tutelle : le prénom seul ne départage personne

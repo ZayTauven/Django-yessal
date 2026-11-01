@@ -129,3 +129,42 @@ class EtiquetteAnonymeTests(JefsBase):
         self.assertEqual(ligne['member_name'], 'Contributeur anonyme')
         self.assertIsNone(ligne['member_id'])
         self.assertFalse(ligne['anonymous_revealed'])
+
+
+class ListesDeJefsTests(JefsBase):
+    """« Les Jëfs » et le Suivi : l'anonymat tenu par le serveur, étiqueté à l'écran."""
+
+    def setUp(self):
+        super().setUp()
+        self.jef_confirme(is_anonymous=True)
+        self.chef = User.objects.create_user(
+            email='chef@ex.org', password='x', role=User.Role.CHEF_DAARA,
+            status=User.Status.ACTIVE, daara=self.kande,
+        )
+
+    def liste(self, user, **params):
+        self.client.force_authenticate(user)
+        data = self.client.get('/api/contributions/', params).json()
+        return data['results'] if isinstance(data, dict) else data
+
+    def test_le_coordinateur_ne_lit_plus_le_nom_d_un_anonyme(self):
+        ligne = self.liste(self.chef)[0]
+        self.assertEqual(ligne['donor_name'], 'Contributeur anonyme')
+        self.assertIsNone(ligne['donor'])
+        self.assertIsNone(ligne['donor_phone'])
+        self.assertTrue(ligne['is_anonymous'])
+
+    def test_l_admin_lit_le_nom_avec_l_indicateur(self):
+        ligne = self.liste(self.admin)[0]
+        self.assertEqual(ligne['donor_name'], 'Awa')
+        self.assertTrue(ligne['is_anonymous'])
+
+    def test_une_recherche_par_nom_ne_trahit_pas_un_anonyme(self):
+        self.assertEqual(self.liste(self.chef, search='Awa'), [])
+        self.assertEqual(len(self.liste(self.admin, search='Awa')), 1)
+
+    def test_le_suivi_signale_l_anonymat(self):
+        self.client.force_authenticate(self.admin)
+        recent = self.client.get('/api/suivi/').json()['recent']
+        self.assertTrue(recent[0]['is_anonymous'])
+        self.assertEqual(recent[0]['donor']['name'], 'Awa')

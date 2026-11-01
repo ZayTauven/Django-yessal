@@ -249,6 +249,17 @@ class DonationViewSet(DonationArchiveSerializerMixin, viewsets.ModelViewSet):
 
         return queryset
 
+    def filter_queryset(self, queryset):
+        queryset = super().filter_queryset(queryset)
+        # Chercher « Awa » ne doit pas faire sortir un Jëf anonyme d'Awa, même
+        # affiché « Contributeur anonyme » : le résultat suffirait à la nommer.
+        user = self.request.user
+        if self.request.query_params.get('search') and user.role not in (
+            User.Role.ADMIN, User.Role.GUIDE, User.Role.COLLECTOR,
+        ):
+            queryset = queryset.exclude(Q(is_anonymous=True) & ~Q(donor=user) & ~Q(collector=user))
+        return queryset
+
     def perform_create(self, serializer):
         """Rattache le Jëf, puis en accuse réception à son auteur.
 

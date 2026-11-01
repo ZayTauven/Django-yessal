@@ -139,6 +139,9 @@ class SuiviViewSet(viewsets.ViewSet):
             'campaign': {'id': d.campaign_id, 'name': d.campaign.name},
             'method': d.get_payment_method_display(),
             'daara': d.donor.daara.name if d.donor.daara_id else None,
+            # La guide voit le vrai nom ; l'écran l'étiquette « Anonyme » pour
+            # qu'elle ne le cite pas (un « Top 3 » annoncé au Kourel).
+            'is_anonymous': d.is_anonymous,
             'created_at': d.created_at.isoformat(),
         }
 

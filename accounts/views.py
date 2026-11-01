@@ -1258,6 +1258,9 @@ class AnalyticsViewSet(viewsets.ViewSet):
                     'amount': int(don.amount),
                     'created_at': don.moment.isoformat(),
                     'status': don.payment_status,
+                    # Le collecteur a rencontré le donateur : il garde le nom,
+                    # avec l'étiquette « Anonyme » pour ne pas le citer.
+                    'is_anonymous': don.is_anonymous,
                 })
 
         # ── Alerts (admin only) ───────────────────────────────────────────
