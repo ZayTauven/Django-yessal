@@ -23,7 +23,7 @@ import unicodedata
 from collections import defaultdict
 from decimal import Decimal
 
-from django.db.models import Count, Sum
+from django.db.models import Count, Q, Sum
 from django.db.models.functions import TruncMonth
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -348,6 +348,52 @@ class SuiviViewSet(viewsets.ViewSet):
         return lignes
 
     # ── Répartition ───────────────────────────────────────────────────────
+    #: Les périodes du podium, comptées en jours de Dakar depuis leur début.
+    PODIUM_PERIODES = ('semaine', 'mois', 'annee')
+
+    @action(detail=False, methods=['get'])
+    def podium(self, request):
+        """`?periode=semaine|mois|annee` — les dix plus grands donateurs.
+
+        Demande du porteur (2026-11-01) : la carte « Coordinateurs » ne disait
+        rien d'utile ; la guide veut le podium des donateurs, celui qu'elle
+        annonce au Kourel. La semaine part du lundi, le mois du 1er, l'année du
+        1er janvier — l'heure de Dakar fait foi.
+
+        `anonymous` : au moins un Jëf de la période a été fait anonymement.
+        La guide voit le nom ; l'écran l'étiquette pour qu'elle ne le cite pas.
+        """
+        today = timezone.localdate()
+        periode = request.query_params.get('periode', 'semaine')
+        if periode not in self.PODIUM_PERIODES:
+            periode = 'semaine'
+        depuis = {
+            'semaine': today - datetime.timedelta(days=today.weekday()),
+            'mois': today.replace(day=1),
+            'annee': today.replace(month=1, day=1),
+        }[periode]
+
+        classement = list(
+            confirmes(depuis).values('donor')
+            .annotate(s=Sum('amount'), n=Count('id'), anonymes=Count('id', filter=Q(is_anonymous=True)))
+            .order_by('-s', 'donor')[:10]
+        )
+        donateurs = User.objects.select_related('title', 'daara').in_bulk([r['donor'] for r in classement])
+        lignes = []
+        for rang, r in enumerate(classement, start=1):
+            donateur = donateurs.get(r['donor'])
+            if donateur is None:
+                continue
+            lignes.append({
+                'rank': rang,
+                **self._personne(donateur),
+                'daara': {'id': donateur.daara_id, 'name': donateur.daara.name} if donateur.daara_id else None,
+                'amount': montant(r['s']),
+                'count': r['n'],
+                'anonymous': r['anonymes'] > 0,
+            })
+        return Response({'period': periode, 'since': depuis.isoformat(), 'rows': lignes})
+
     @action(detail=False, methods=['get'])
     def repartition(self, request):
         """`?par=ldd|daara|titre|pays` — un classement, le plus grand d'abord."""

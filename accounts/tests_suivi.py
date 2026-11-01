@@ -213,3 +213,50 @@ class DaaraTests(Base):
     def test_un_daara_inconnu(self):
         self.client.force_authenticate(self.guide)
         self.assertEqual(self.client.get('/api/suivi/daara/999999/').status_code, 404)
+
+
+class PodiumTests(Base):
+    """Le « Top 10 des donateurs » qui remplace la carte « Coordinateurs » (2026-11-01)."""
+
+    def podium(self, periode, user=None):
+        self.client.force_authenticate(user or self.guide)
+        return self.client.get(f'/api/suivi/podium/?periode={periode}')
+
+    def instant(self, jours):
+        return timezone.now() - datetime.timedelta(days=jours)
+
+    def test_cumule_par_donateur_et_trie(self):
+        self.jef(self.awa, 3000)
+        self.jef(self.awa, 4000)
+        self.jef(self.fatou, 5000)
+        self.jef(self.fatou, 999, status=Donation.PaymentStatus.PENDING)
+        lignes = self.podium('annee').json()['rows']
+        self.assertEqual([(l['name'], l['amount'], l['count'], l['rank']) for l in lignes],
+                         [('Awa Ndiaye', 7000, 2, 1), ('Fatou', 5000, 1, 2)])
+
+    def test_la_periode_borne_le_podium(self):
+        self.jef(self.awa, 5000)
+        # Avant le début de l'année : hors de toutes les périodes.
+        debut_annee = timezone.localdate().replace(month=1, day=1)
+        self.jef(self.fatou, 9000, quand=timezone.make_aware(
+            datetime.datetime.combine(debut_annee - datetime.timedelta(days=2), datetime.time(12))))
+        for periode in ('semaine', 'mois', 'annee'):
+            noms = [l['name'] for l in self.podium(periode).json()['rows']]
+            self.assertEqual(noms, ['Awa Ndiaye'], periode)
+
+    def test_au_plus_dix_donateurs(self):
+        for i in range(12):
+            u = User.objects.create_user(email=f'd{i}@ex.org', password='x', status=User.Status.ACTIVE)
+            self.jef(u, 1000 + i)
+        self.assertEqual(len(self.podium('mois').json()['rows']), 10)
+
+    def test_un_jef_anonyme_est_signale(self):
+        d = self.jef(self.awa, 5000)
+        Donation.objects.filter(pk=d.pk).update(is_anonymous=True)
+        ligne = self.podium('mois').json()['rows'][0]
+        self.assertTrue(ligne['anonymous'])
+        self.assertEqual(ligne['name'], 'Awa Ndiaye')
+
+    def test_reserve_a_la_guide_et_a_l_admin(self):
+        self.assertEqual(self.podium('mois', self.admin).status_code, 200)
+        self.assertEqual(self.podium('mois', self.membre).status_code, 403)

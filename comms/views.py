@@ -116,7 +116,16 @@ class ChatViewSet(viewsets.ModelViewSet):
         ).values('last_read_at')[:1]
         default_last_read = Value(datetime(1970, 1, 1, tzinfo=dt_timezone.utc))
 
-        last_message_qs = Message.objects.filter(chat_id=OuterRef('pk')).order_by('-sent_at')
+        # Le dernier message affiché en aperçu : jamais un message effacé par
+        # « Supprimer la discussion » (`ChatMembership.cleared_at`).
+        efface_le = ChatMembership.objects.filter(
+            chat_id=OuterRef(OuterRef('pk')), user=user,
+        ).values('cleared_at')[:1]
+        last_message_qs = (
+            Message.objects.filter(chat_id=OuterRef('pk'))
+            .filter(sent_at__gt=Coalesce(Subquery(efface_le), default_last_read))
+            .order_by('-sent_at')
+        )
         memberships_qs = ChatMembership.objects.select_related('user', 'user__daara', 'user__title')
 
         fils = Chat.objects.filter(id__in=chat_ids)
@@ -138,6 +147,8 @@ class ChatViewSet(viewsets.ModelViewSet):
             )
             if not voir_archives:
                 fils = fils.filter(archived_at__isnull=True)
+            # Une discussion supprimée sort de la liste jusqu'au prochain message.
+            fils = fils.exclude(id__in=ChatMembership.objects.filter(user=user, hidden=True).values('chat_id'))
         return (
             fils
             .select_related('campaign', 'daara', 'pinned_message', 'pinned_message__sender')
@@ -273,6 +284,29 @@ class ChatViewSet(viewsets.ModelViewSet):
             total += non_lus
             conversations += 1
         return Response({'total': total, 'chats': conversations})
+
+    @action(detail=True, methods=['post'], url_path='clear')
+    def clear(self, request, pk=None):
+        """« Supprimer la discussion » d'un tête-à-tête, comme WhatsApp.
+
+        Chez l'appelant seul : l'historique s'efface et le fil sort de sa
+        liste. L'autre personne garde tout. Le prochain message, de l'un ou de
+        l'autre, fait revenir le fil — à partir de ce message.
+        """
+        chat = self.get_object()
+        if chat.chat_type != Chat.ChatType.DIRECT:
+            raise ValidationError("Seule une discussion directe se supprime ainsi.")
+        membership = ChatMembership.objects.filter(chat=chat, user=request.user).first()
+        if not membership:
+            return Response({'detail': 'Non membre.'}, status=status.HTTP_403_FORBIDDEN)
+        maintenant = timezone.now()
+        membership.cleared_at = maintenant
+        membership.last_read_at = maintenant
+        membership.hidden = True
+        membership.save(update_fields=['cleared_at', 'last_read_at', 'hidden'])
+        # Ses autres appareils retirent le fil de leur liste.
+        publier(f'private-user.{request.user.id}', 'chat-settings', {'chat_id': chat.id, 'cleared': True})
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=['post'], url_path='mute')
     def toggle_mute(self, request, pk=None):
@@ -607,6 +641,11 @@ class MessageViewSet(viewsets.ModelViewSet):
             .select_related('chat', 'sender', 'sender__daara', 'sender__title', 'reply_to', 'reply_to__sender')
             .prefetch_related('reactions')
         )
+        # « Supprimer la discussion » : ce qui précède l'effacement n'existe
+        # plus pour ce membre — fil, recherche, pagination compris.
+        qs = qs.exclude(Exists(ChatMembership.objects.filter(
+            chat_id=OuterRef('chat_id'), user=user, cleared_at__gte=OuterRef('sent_at'),
+        )))
         chat_id = self.request.query_params.get('chat')
         if chat_id:
             qs = qs.filter(chat_id=chat_id)
@@ -766,7 +805,34 @@ class ChatInvitationViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         if request.user.role == User.Role.ADMIN:
             return self._ecrire_directement(request)
+        # Un tête-à-tête existe déjà — supprimé de son côté, peut-être : on le
+        # rouvre au lieu de refuser. Le refus (« une discussion directe existe
+        # déjà ») laissait sans issue celui qui avait supprimé la discussion :
+        # le fil n'était plus dans sa liste, et il ne pouvait plus le rouvrir.
+        existant = self._tete_a_tete_existant(request)
+        if existant is not None:
+            return self._rouvrir(request, existant)
         return super().create(request, *args, **kwargs)
+
+    @staticmethod
+    def _tete_a_tete_existant(request):
+        destinataire = request.data.get('recipient')
+        if not str(destinataire or '').isdigit():
+            return None
+        return (
+            Chat.objects.filter(chat_type=Chat.ChatType.DIRECT, memberships__user=request.user)
+            .filter(memberships__user_id=int(destinataire))
+            .first()
+        )
+
+    @staticmethod
+    def _rouvrir(request, chat):
+        """Rend le fil à ouvrir, revenu dans la liste de l'appelant."""
+        ChatMembership.objects.filter(chat=chat, user=request.user, hidden=True).update(hidden=False)
+        return Response(
+            {'direct': True, 'chat': ChatSerializer(chat, context={'request': request}).data},
+            status=status.HTTP_201_CREATED,
+        )
 
     @transaction.atomic
     def _ecrire_directement(self, request):
@@ -788,10 +854,7 @@ class ChatInvitationViewSet(viewsets.ModelViewSet):
             ChatMembership.objects.create(chat=chat, user=request.user, added_by=request.user)
             ChatMembership.objects.create(chat=chat, user=recipient, added_by=request.user)
             note_systeme(chat, request.user, "Discussion directe démarrée.")
-        return Response(
-            {'direct': True, 'chat': ChatSerializer(chat, context={'request': request}).data},
-            status=status.HTTP_201_CREATED,
-        )
+        return self._rouvrir(request, chat)
 
     def perform_create(self, serializer):
         recipient_id = self.request.data.get('recipient')

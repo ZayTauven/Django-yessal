@@ -1,7 +1,7 @@
 from django.db.models.signals import post_save, post_delete, pre_save
 from django.dispatch import receiver
 from django.conf import settings
-from .models import Message, MessageReaction, ChatInvitation, Notification
+from .models import ChatInvitation, ChatMembership, Message, MessageReaction, Notification
 from .services import diffuser_message, publier, send_fcm_push
 
 @receiver(post_save, sender=Message)
@@ -12,6 +12,9 @@ def broadcast_message(sender, instance, created, **kwargs):
             # rien sur les téléphones et ne fait pas remonter la liste.
             publier(f'private-chat.{instance.chat_id}', 'new-message', _charge(instance))
             return
+        # « Supprimer la discussion » : le prochain message fait revenir le
+        # fil chez qui l'avait supprimé — à partir de ce message seulement.
+        ChatMembership.objects.filter(chat_id=instance.chat_id, hidden=True).update(hidden=False)
         # La charge est celle de l'API : citation, nom de fichier, vignette.
         # Un objet recomposé à la main ici divergeait du `GET` au premier
         # champ ajouté — le fil temps réel n'aurait jamais montré la citation.

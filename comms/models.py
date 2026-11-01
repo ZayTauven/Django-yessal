@@ -107,6 +107,13 @@ class ChatMembership(models.Model):
     # Dans un salon : ajoute, retire et nomme d'autres modérateurs. Le
     # créateur l'est d'office (décision du 2026-10-30). Sans effet ailleurs.
     is_moderator = models.BooleanField(default=False)
+    # « Supprimer la discussion », comme WhatsApp (2026-11-01, tête-à-tête) :
+    # l'historique antérieur disparaît POUR CE MEMBRE seul — l'autre garde
+    # tout — et le fil sort de sa liste jusqu'au prochain message, qui le
+    # fait revenir à zéro. `hidden` retombe à ce message, ou s'il réécrit
+    # lui-même à la même personne ; `cleared_at` reste et borne l'historique.
+    cleared_at = models.DateTimeField(null=True, blank=True)
+    hidden = models.BooleanField(default=False)
 
     class Meta:
         unique_together = ('chat', 'user')
