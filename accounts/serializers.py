@@ -19,6 +19,7 @@ from .authentication import TOKEN_VERSION_CLAIM
 from .services.accueil import etapes_accueil
 
 from core.mail import send_to_user
+from core.pays import code_pays
 from core.phone import looks_like_phone, normalize_phone, normalize_phone_quietly
 
 User = get_user_model()
@@ -83,6 +84,33 @@ class PhoneField(serializers.CharField):
         # `normalize_phone` lève la ValidationError de Django ; DRF la traduit
         # en 400 rattachée à ce champ.
         return normalize_phone(super().to_internal_value(data))
+
+
+class PaysField(serializers.CharField):
+    """Le pays de résidence, ramené à son code ISO.
+
+    Accepte le code (« SN ») que les formulaires envoient désormais, et le nom
+    (« Sénégal ») que tapent encore les applications mobiles déjà installées.
+    Une saisie qui n'est ni l'un ni l'autre est refusée : c'est elle qui
+    faussait la répartition des Jëfs par pays (`core/pays.py`).
+    """
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault('required', False)
+        kwargs.setdefault('allow_null', True)
+        kwargs.setdefault('allow_blank', True)
+        super().__init__(**kwargs)
+
+    def run_validation(self, data=serializers.empty):
+        if isinstance(data, str) and not data.strip():
+            data = None
+        return super().run_validation(data)
+
+    def to_internal_value(self, data):
+        code = code_pays(super().to_internal_value(data))
+        if code is None:
+            raise serializers.ValidationError("Choisissez votre pays dans la liste.")
+        return code
 
 
 def _champ_telephone(**kwargs):
@@ -387,6 +415,8 @@ class UserSerializer(serializers.ModelSerializer):
         allow_null=True,
     )
     title_name = serializers.CharField(source='title.name', read_only=True, allow_null=True)
+    residence_country = PaysField()
+    residence_country_name = serializers.CharField(read_only=True, allow_null=True)
     # Les étapes d'accueil restantes — vide une fois le compte en ordre. Voir
     # `services.accueil` : c'est la seule copie de la règle.
     onboarding = serializers.SerializerMethodField()
@@ -400,7 +430,7 @@ class UserSerializer(serializers.ModelSerializer):
             'avatar_url', 'avatar', 'last_active_at',
             'is_admin',
             'title', 'title_id', 'title_name', 'title_change_count', 'title_changed_at',
-            'birth_date', 'gender', 'residence_country',
+            'birth_date', 'gender', 'residence_country', 'residence_country_name',
             'city', 'address', 'state', 'zip_code',
             'marital_status', 'blood_type',
             'date_joined',
@@ -494,6 +524,7 @@ class UserSerializer(serializers.ModelSerializer):
 
 class ProfileUpdateSerializer(serializers.ModelSerializer):
     phone = _champ_telephone()
+    residence_country = PaysField()
 
     class Meta:
         model = User

@@ -7,6 +7,7 @@ from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
+from core import pays
 from core.phone import normalize_phone
 from core.validators import downscale_image, validate_upload_size
 
@@ -211,7 +212,12 @@ class User(AbstractUser):
     title_changed_at = models.DateTimeField(null=True, blank=True)
     birth_date = models.DateField(blank=True, null=True)
     gender = models.CharField(max_length=10, choices=Gender.choices, blank=True, null=True)
-    residence_country = models.CharField(max_length=100, blank=True, null=True)
+    # Un code ISO (« SN », « FR »), jamais un nom tapé : voir `core/pays.py`.
+    residence_country = models.CharField(max_length=2, choices=pays.CHOIX, blank=True, null=True)
+
+    @property
+    def residence_country_name(self):
+        return pays.nom_pays(self.residence_country)
     city = models.CharField(max_length=100, blank=True, null=True)
     address = models.CharField(max_length=255, blank=True, null=True)
     state = models.CharField(max_length=100, blank=True, null=True)

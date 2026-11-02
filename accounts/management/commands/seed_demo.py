@@ -66,7 +66,8 @@ NOMS = [
 ]
 
 VILLES = ["Dakar", "Touba", "Thiès", "Saint-Louis", "Kaolack", "Mbour", "Ziguinchor"]
-PAYS = ["Sénégal", "Sénégal", "Sénégal", "France", "Italie", "États-Unis"]
+# Des codes ISO : voir `core/pays.py`.
+PAYS = ["SN", "SN", "SN", "FR", "IT", "US"]
 
 TITRES = ["Serigne", "Sokhna", "Djiëwrigne", "Mame"]
 

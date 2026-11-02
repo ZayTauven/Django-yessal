@@ -33,6 +33,8 @@ import logging
 from django.contrib.auth import get_user_model
 from django.db import transaction
 
+from core.pays import est_diaspora
+
 logger = logging.getLogger(__name__)
 
 #: Le compte au nom duquel le serveur publie. Inactif : invisible dans la
@@ -42,7 +44,6 @@ EMAIL_SYSTEME = 'systeme@yessal.local'
 PICTOS = ['generosite', 'main-tendue', 'repas', 'collecte', 'proche', 'appel']
 TONS = ['peach', 'yellow', 'teal', 'pink', 'lilac']
 PALIERS = {10, 25, 50, 75, 100, 150, 200, 250, 300, 400, 500, 750, 1000}
-PAYS_LOCAUX = {'', 'senegal', 'sénégal', 'sn'}
 
 PHRASES_NOMMEES = [
     "{nom} a fait son Jëf pour {ndiguel}.",
@@ -92,8 +93,8 @@ def abonner(user):
 
 
 def _hors_senegal(user):
-    pays = (getattr(user, 'residence_country', '') or '').strip().lower()
-    return pays not in PAYS_LOCAUX
+    # La même règle que la part de la diaspora dans le suivi du Kourel.
+    return est_diaspora(getattr(user, 'residence_country', None))
 
 
 def composer_carte(donation, rang):

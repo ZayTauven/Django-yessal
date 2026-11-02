@@ -41,14 +41,14 @@ class Base(APITestCase):
         self.membre = User.objects.create_user(email='m@ex.org', first_name='Modou', daara=self.kande, **actif)
         self.awa = User.objects.create_user(
             email='awa@ex.org', first_name='Awa', last_name='Ndiaye', daara=self.kande,
-            title=self.serigne, residence_country='France', **actif,
+            title=self.serigne, residence_country='FR', **actif,
         )
         self.fatou = User.objects.create_user(
-            email='fatou@ex.org', first_name='Fatou', daara=self.police, residence_country='Senegal', **actif,
+            email='fatou@ex.org', first_name='Fatou', daara=self.police, residence_country='SN', **actif,
         )
         self.bineta = User.objects.create_user(
             email='bineta@ex.org', first_name='Bineta', last_name='Sow', daara=self.police,
-            role=User.Role.CHEF_DAARA, residence_country='Sénégal', phone='+221770000001', **actif,
+            role=User.Role.CHEF_DAARA, residence_country='SN', phone='+221770000001', **actif,
         )
         self.papice = User.objects.create_user(
             email='papice@ex.org', first_name='Papice', daara=self.aviateur, role=User.Role.CHEF_DAARA, **actif,
@@ -192,9 +192,9 @@ class RepartitionTests(Base):
         self.assertEqual(rows['Serigne']['members'], 1)
         self.assertEqual(rows['Sans titre']['amount'], 40000)
 
-    def test_par_pays_les_graphies_d_un_meme_pays_se_rejoignent(self):
-        rows = {l['name']: l['amount'] for l in self.get('pays')['rows']}
-        self.assertEqual(rows, {'France': 60000, 'Sénégal': 40000})
+    def test_par_pays_une_ligne_par_code(self):
+        rows = {l['id']: (l['name'], l['amount']) for l in self.get('pays')['rows']}
+        self.assertEqual(rows, {'FR': ('France', 60000), 'SN': ('Sénégal', 40000)})
 
 
 class DaaraTests(Base):

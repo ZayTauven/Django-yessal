@@ -165,7 +165,7 @@ class CarteDeJefTests(Base):
         self.assertEqual(payload['variant'], 'palier')
         self.assertIn(str(palier), texte)
 
-        self.modou.residence_country = 'France'
+        self.modou.residence_country = 'FR'
         don = Donation(pk=8, campaign=self.ndiguel, donor=self.modou, amount=1)  # pk pair : variante diaspora
         self.assertEqual(composer_carte(don, rang=3)[1]['variant'], 'diaspora')
 

@@ -14,12 +14,12 @@ Conventions de calcul, les mêmes partout ici :
   bord de l'administration. Ce qui est demandé, encaissé par un collecteur ou
   annoncé par virement « attend la confirmation de l'équipe ».
 - Un Jëf est rattaché au Daara (et donc à la LDD) de son DONATEUR.
-- Le pays est celui du donateur, normalisé : « Senegal » et « Sénégal » sont
-  le même pays. Un pays non renseigné compte comme le Sénégal pour la part de
-  la diaspora (même règle que les cartes du canal des Jëfs).
+- Le pays est celui du donateur, un code ISO choisi dans une liste
+  (`core/pays.py`) : plus de graphies à réconcilier. Un pays non renseigné
+  compte comme le Sénégal pour la part de la diaspora (même règle que les
+  cartes du canal des Jëfs, `est_diaspora`).
 """
 import datetime
-import unicodedata
 from collections import defaultdict
 from decimal import Decimal
 
@@ -32,6 +32,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from contributions.models import Donation
+from core.pays import est_diaspora, nom_pays
 from events.models import Campaign
 
 from .models import LDD, Daara, MemberTitle, User
@@ -44,14 +45,6 @@ EN_ATTENTE = (
     Donation.PaymentStatus.PENDING_WIRE,
     Donation.PaymentStatus.COLLECTED,
 )
-
-#: Formes d'un même pays, une fois les accents et la casse retirés.
-PAYS_LOCAUX = {'', 'senegal', 'sn'}
-NOMS_DE_PAYS = {
-    'senegal': 'Sénégal', 'sn': 'Sénégal', 'france': 'France',
-    'etats-unis': 'États-Unis', 'etats unis': 'États-Unis', 'usa': 'États-Unis',
-    'italie': 'Italie', 'espagne': 'Espagne', 'gambie': 'Gambie', 'gambia': 'Gambie',
-}
 
 DELAI_SANS_JEF = 30
 ALERTES_MAX = 5
@@ -66,18 +59,6 @@ class EstGuideOuAdmin(permissions.BasePermission):
             user and user.is_authenticated
             and user.role in (User.Role.GUIDE, User.Role.ADMIN)
         )
-
-
-def cle_pays(valeur):
-    """« Sénégal », « senegal », « SENEGAL » → « senegal »."""
-    texte = unicodedata.normalize('NFKD', (valeur or '').strip().lower())
-    return ''.join(c for c in texte if not unicodedata.combining(c))
-
-
-def nom_pays(cle, vu):
-    if not cle:
-        return 'Non renseigné'
-    return NOMS_DE_PAYS.get(cle) or vu
 
 
 def debut_de_periode(periode, today):
@@ -159,7 +140,7 @@ class SuiviViewSet(viewsets.ViewSet):
 
         diaspora = Decimal(0)
         for pays, somme in jefs.values_list('donor__residence_country').annotate(s=Sum('amount')):
-            if cle_pays(pays) not in PAYS_LOCAUX:
+            if est_diaspora(pays):
                 diaspora += somme or 0
         diaspora_pct = round(diaspora * 100 / total['s']) if total['s'] else 0
 
@@ -437,21 +418,20 @@ class SuiviViewSet(viewsets.ViewSet):
             lignes.sort(key=lambda l: (-l['amount'], -l['members']))
             sans = None
         elif par == 'pays':
-            groupes = defaultdict(lambda: {'amount': 0, 'count': 0, 'vu': ''})
+            # Un code par pays : la base regroupe seule. `''` et `None` ne
+            # sont qu'un seul « Non renseigné ».
+            groupes = defaultdict(lambda: {'amount': 0, 'count': 0})
             for pays, s, n in jefs.values_list('donor__residence_country').annotate(
                 s=Sum('amount'), n=Count('id'),
             ):
-                g = groupes[cle_pays(pays)]
+                g = groupes[pays or None]
                 g['amount'] += montant(s)
                 g['count'] += n
-                # La graphie accentuée l'emporte : « Sénégal » plutôt que « Senegal ».
-                if len((pays or '').encode()) > len(g['vu'].encode()):
-                    g['vu'] = (pays or '').strip()
             lignes = sorted(
                 (
-                    {'id': cle or None, 'name': nom_pays(cle, g['vu']),
+                    {'id': code, 'name': nom_pays(code) or 'Non renseigné',
                      'amount': g['amount'], 'count': g['count']}
-                    for cle, g in groupes.items()
+                    for code, g in groupes.items()
                 ),
                 key=lambda l: -l['amount'],
             )
