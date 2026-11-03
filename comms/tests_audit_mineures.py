@@ -46,11 +46,16 @@ class InvitationAutomatiqueTests(MineuresBase):
         invitation = ChatInvitation.objects.get()
         self.assertEqual(invitation.status, ChatInvitation.Status.ACCEPTED)
         self.assertTrue(ChatMembership.objects.filter(chat=invitation.chat, user=self.modou).exists())
+        # Les clients ouvrent le fil sur `direct` : sans lui, ils annonçaient
+        # « demande envoyée » pour une discussion déjà ouverte.
+        self.assertTrue(r.data['direct'])
+        self.assertEqual(r.data['chat']['id'], invitation.chat_id)
 
     def test_par_defaut_l_invitation_attend_une_reponse(self):
         self.en(self.awa)
-        self.client.post('/api/comms/invitations/', {'recipient': self.modou.id}, format='json')
+        r = self.client.post('/api/comms/invitations/', {'recipient': self.modou.id}, format='json')
         self.assertEqual(ChatInvitation.objects.get().status, ChatInvitation.Status.PENDING)
+        self.assertNotIn('direct', r.data)
 
 
 class GalerieTests(MineuresBase):

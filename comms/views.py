@@ -812,7 +812,15 @@ class ChatInvitationViewSet(viewsets.ModelViewSet):
         existant = self._tete_a_tete_existant(request)
         if existant is not None:
             return self._rouvrir(request, existant)
-        return super().create(request, *args, **kwargs)
+        self._ouvert_d_office = None
+        reponse = super().create(request, *args, **kwargs)
+        # Le pilotage a ouvert la discussion sans attendre de réponse : on rend
+        # le fil, comme pour l'administration. L'invitation seule faisait
+        # annoncer « demande envoyée » au web et au mobile, alors que le fil
+        # existait déjà et qu'aucune acceptation ne viendrait.
+        if self._ouvert_d_office is not None:
+            return self._rouvrir(request, self._ouvert_d_office)
+        return reponse
 
     @staticmethod
     def _tete_a_tete_existant(request):
@@ -906,7 +914,7 @@ class ChatInvitationViewSet(viewsets.ModelViewSet):
         # Le réglage existait, rien ne le lisait.
         if not get_effective_config(recipient).allow_invite_accept_decline:
             with transaction.atomic():
-                self._ouvrir_tete_a_tete(invitation)
+                self._ouvert_d_office = self._ouvrir_tete_a_tete(invitation)
             notify(
                 recipient,
                 code='invitation_salon',
