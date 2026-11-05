@@ -3,6 +3,7 @@ import os
 
 from django.utils.deprecation import MiddlewareMixin
 from accounts.models import AuditLog
+from accounts.services.audit_presentation import target_label_for_path
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,26 @@ class AuditMiddleware(MiddlewareMixin):
     def _is_noise(path: str) -> bool:
         return any(path.endswith(suffix) for suffix in AUDIT_IGNORED_SUFFIXES)
 
+    @staticmethod
+    def _created_id(response):
+        """L'identifiant de ce qu'une requête vient de créer : son chemin ne le
+        dit pas, seule la réponse le connaît."""
+        data = getattr(response, 'data', None)
+        if response.status_code == 201 and isinstance(data, dict):
+            created_id = data.get('id')
+            if isinstance(created_id, int):
+                return created_id
+        return None
+
+    def process_request(self, request):
+        # Après une suppression, le nom de la cible n'existe plus nulle part :
+        # le journal ne saurait dire que « Compte n°12 ». On le relève avant.
+        if request.method == 'DELETE':
+            try:
+                request.audit_target_label = target_label_for_path(request.method, request.path)
+            except Exception:
+                logger.exception("Audit target lookup failed")
+
     def process_response(self, request, response):
         # We only log successful state-changing requests by authenticated users
         if (
@@ -94,16 +115,22 @@ class AuditMiddleware(MiddlewareMixin):
                     method_label = method_labels.get(request.method, request.method)
                     description = f"{method_label} sur {entity or 'système'} ({request.path})"
                     
+                    metadata = {
+                        "status_code": response.status_code,
+                        "query_params": dict(request.GET),
+                        "method": request.method,
+                    }
+                    target_label = getattr(request, 'audit_target_label', None)
+                    if target_label:
+                        metadata["target_label"] = target_label
+
                     AuditLog.objects.create(
                         user=request.user,
                         action=action,
                         entity=entity,
+                        entity_id=self._created_id(response),
                         description=description,
-                        metadata={
-                            "status_code": response.status_code,
-                            "query_params": dict(request.GET),
-                            "method": request.method,
-                        }
+                        metadata=metadata,
                     )
                 except Exception:
                     # Don't break the response if logging fails

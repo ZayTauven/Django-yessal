@@ -1368,7 +1368,7 @@ class AnalyticsViewSet(viewsets.ViewSet):
 
 
 class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = AuditLog.objects.all().order_by('-created_at')
+    queryset = AuditLog.objects.select_related('user').order_by('-created_at')
     serializer_class = AuditLogSerializer
     permission_classes = [permissions.IsAdminUser]
 

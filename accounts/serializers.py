@@ -5,6 +5,7 @@ from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from .services.audit_presentation import AuditPresenter, display_name
 from .models import (
     Daara,
     Tutelle,
@@ -732,10 +733,35 @@ class TitleRequestReviewSerializer(serializers.Serializer):
     note = serializers.CharField(required=False, allow_blank=True)
 
 
+class AuditLogListSerializer(serializers.ListSerializer):
+    """Prépare la traduction du lot entier : une requête par type de cible."""
+
+    def to_representation(self, data):
+        logs = list(data.all() if hasattr(data, 'all') else data)
+        self.child.presenter = AuditPresenter(logs)
+        return super().to_representation(logs)
+
+
 class AuditLogSerializer(serializers.ModelSerializer):
     user_email = serializers.EmailField(source='user.email', read_only=True)
+    actor_name = serializers.SerializerMethodField()
+    actor_contact = serializers.SerializerMethodField()
 
     class Meta:
         model = AuditLog
-        fields = ['id', 'user', 'user_email', 'action', 'entity', 'entity_id', 'description', 'metadata', 'created_at']
+        list_serializer_class = AuditLogListSerializer
+        fields = [
+            'id', 'user', 'user_email', 'actor_name', 'actor_contact', 'action', 'entity', 'entity_id',
+            'description', 'metadata', 'created_at',
+        ]
+
+    def get_actor_name(self, log):
+        return display_name(log.user) if log.user else None
+
+    def get_actor_contact(self, log):
+        return (log.user.email or log.user.phone) if log.user else None
+
+    def to_representation(self, log):
+        presenter = getattr(self, 'presenter', None) or AuditPresenter([log])
+        return {**super().to_representation(log), **presenter.present(log)}
 
