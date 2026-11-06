@@ -1,7 +1,15 @@
+import base64
+import binascii
+import io
 import os
+import uuid
 
+from PIL import Image
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
+from django.core.files.base import ContentFile
+
+from core.validators import EXTENSIONS_VIDEO
 from .models import (
     Message,
     Chat,
@@ -66,7 +74,35 @@ class MessageReactionSerializer(serializers.ModelSerializer):
 EXTENSIONS_IMAGE = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
 #: Extensions lues par le lecteur de note vocale.
 EXTENSIONS_AUDIO = {'.mp3', '.m4a', '.aac', '.ogg', '.opus', '.wav', '.amr', '.webm'}
-EXTENSIONS_VIDEO = {'.mp4', '.mov', '.3gp'}
+
+#: Une vignette pèse quelques dizaines de Ko : au-delà, ce n'en est pas une.
+VIGNETTE_POIDS_MAX = 512 * 1024
+VIGNETTE_COTE_MAX = 640
+
+
+def vignette_depuis_base64(texte):
+    """L'aperçu envoyé par l'expéditeur, ré-encodé, ou None s'il est inutilisable.
+
+    Ne lève jamais : perdre une vidéo de 100 Mo pour une vignette illisible
+    serait absurde, le fil sait afficher une vidéo sans aperçu. Le ré-encodage
+    garantit qu'on ne stocke que des pixels, pas ce que le client a fabriqué.
+    """
+    if not texte:
+        return None
+    try:
+        brut = base64.b64decode(texte, validate=True)
+        if len(brut) > VIGNETTE_POIDS_MAX:
+            return None
+        image = Image.open(io.BytesIO(brut))
+        if (image.format or '').upper() not in {'JPEG', 'PNG', 'WEBP'}:
+            return None
+        image = image.convert('RGB')
+        image.thumbnail((VIGNETTE_COTE_MAX, VIGNETTE_COTE_MAX))
+        sortie = io.BytesIO()
+        image.save(sortie, format='JPEG', quality=75, optimize=True)
+    except (binascii.Error, ValueError, OSError, Image.DecompressionBombError):
+        return None
+    return ContentFile(sortie.getvalue(), name=f'{uuid.uuid4().hex}.jpg')
 
 
 def nature_fichier(fichier):
@@ -142,6 +178,8 @@ class MessageSerializer(serializers.ModelSerializer):
     file_size = serializers.SerializerMethodField()
     file_is_image = serializers.SerializerMethodField()
     file_kind = serializers.SerializerMethodField()
+    file_thumbnail_url = serializers.SerializerMethodField()
+    thumbnail_b64 = serializers.CharField(write_only=True, required=False, allow_blank=True)
     reply_preview = ReplyPreviewSerializer(source='reply_to', read_only=True)
     # Vide autorisé : une pièce jointe peut partir sans légende. La règle
     # « un texte ou un fichier » est posée par `validate`.
@@ -154,6 +192,7 @@ class MessageSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'chat', 'sender', 'message_type', 'content',
             'file', 'file_url', 'file_name', 'file_size', 'file_is_image', 'file_kind',
+            'file_thumbnail_url', 'file_duration', 'thumbnail_b64',
             'reply_to', 'reply_preview', 'reactions', 'is_deleted', 'sent_at',
             'edited_at', 'payload', 'client_id',
         ]
@@ -203,6 +242,13 @@ class MessageSerializer(serializers.ModelSerializer):
         texte = (attrs.get('content') or '').strip()
         if attrs.get('message_type') == Message.MessageType.SYSTEM:
             raise serializers.ValidationError({'message_type': "Les messages système sont réservés au serveur."})
+        vignette = attrs.pop('thumbnail_b64', None)
+        if fichier and nature_fichier(fichier) == 'video':
+            apercu = vignette_depuis_base64(vignette)
+            if apercu:
+                attrs['file_thumbnail'] = apercu
+        else:
+            attrs.pop('file_duration', None)
         if fichier:
             attrs['message_type'] = Message.MessageType.FILE
         elif not texte:
@@ -219,6 +265,9 @@ class MessageSerializer(serializers.ModelSerializer):
 
     def get_file_url(self, obj):
         return obj.file.url if obj.file and not obj.is_deleted else None
+
+    def get_file_thumbnail_url(self, obj):
+        return obj.file_thumbnail.url if obj.file_thumbnail and not obj.is_deleted else None
 
     def get_file_name(self, obj):
         return nom_de_fichier(obj.file) or None

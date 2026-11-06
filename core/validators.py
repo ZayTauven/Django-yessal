@@ -9,6 +9,8 @@ Le plafond de téléversement est appliqué en DEUX endroits, volontairement :
     publique : un envoi direct doit être rejeté aussi.
 """
 
+import os
+
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator
@@ -44,28 +46,56 @@ class ValidateUploadSize:
             settings, "MAX_UPLOAD_SIZE", 15 * 1024 * 1024
         )
 
+    def limit_for(self, value) -> int:
+        return self.limit
+
     def __call__(self, value):
         # `value` est un FieldFile ; un champ vide n'a pas de taille à vérifier.
         if not value or not getattr(value, "size", None):
             return
 
-        if value.size > self.limit:
+        limit = self.limit_for(value)
+        if value.size > limit:
             raise ValidationError(
                 "Ce fichier fait %(actual)s : la taille maximale autorisée est "
                 "de %(limit)s.",
                 code="file_too_large",
                 params={
                     "actual": _human_size(value.size),
-                    "limit": _human_size(self.limit),
+                    "limit": _human_size(limit),
                 },
             )
 
     def __eq__(self, other):
-        return isinstance(other, ValidateUploadSize) and self.max_bytes == other.max_bytes
+        return type(other) is type(self) and self.max_bytes == other.max_bytes
 
 
 # Instance partagée : c'est elle qu'on rattache aux champs de modèle.
 validate_upload_size = ValidateUploadSize()
+
+
+#: Extensions lues comme des vidéos par la messagerie. `.webm` n'en fait pas
+#: partie : c'est le format des notes vocales enregistrées dans le navigateur.
+EXTENSIONS_VIDEO = {".mp4", ".mov", ".3gp"}
+
+
+@deconstructible
+class ValidatePieceJointeSize(ValidateUploadSize):
+    """Le plafond d'une pièce jointe de conversation, selon sa nature.
+
+    Une vidéo a son propre plafond : 15 Mo, c'est quelques secondes filmées au
+    téléphone en 1080p. Le relever pour tout le monde n'avait pas de sens : une
+    photo de reçu ou un PDF n'a aucune raison de peser 100 Mo.
+    """
+
+    def limit_for(self, value) -> int:
+        extension = os.path.splitext(getattr(value, "name", "") or "")[1].lower()
+        if extension in EXTENSIONS_VIDEO:
+            return getattr(settings, "MAX_VIDEO_UPLOAD_SIZE", 100 * 1024 * 1024)
+        return self.limit
+
+
+validate_piece_jointe_size = ValidatePieceJointeSize()
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -617,10 +617,15 @@ DEFAULT_PHONE_REGION = config('DEFAULT_PHONE_REGION', default='+221')
 # rattaché aux champs de fichier des modèles.
 MAX_UPLOAD_SIZE = config('MAX_UPLOAD_SIZE', default=15 * 1024 * 1024, cast=int)
 
+# Le plafond à part des vidéos de la messagerie : le téléphone les compresse
+# avant l'envoi, mais une vidéo reste un autre ordre de grandeur qu'une photo.
+# Réglable sans toucher au code, pour suivre le disque du serveur définitif.
+MAX_VIDEO_UPLOAD_SIZE = config('MAX_VIDEO_UPLOAD_SIZE', default=100 * 1024 * 1024, cast=int)
+
 # Au-delà de ce seuil, Django écrit le fichier sur disque au lieu de le garder
-# en mémoire. Aligné sur le plafond pour éviter qu'un envoi valide soit
-# fractionné inutilement.
-FILE_UPLOAD_MAX_MEMORY_SIZE = MAX_UPLOAD_SIZE
+# en mémoire. Ce réglage ne suit surtout pas les plafonds ci-dessus : une seule
+# vidéo de 100 Mo tiendrait en mémoire, dans un conteneur limité à 768 Mo.
+FILE_UPLOAD_MAX_MEMORY_SIZE = 5 * 1024 * 1024
 
 # Taille maximale du corps de requête HORS fichiers (champs de formulaire).
 # Reste modeste : aucun formulaire du produit n'envoie autant de texte.

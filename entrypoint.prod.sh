@@ -26,4 +26,7 @@ echo "Collecting static files..."
 python manage.py collectstatic --noinput
 
 echo "Starting Gunicorn server..."
-python -m gunicorn --bind 0.0.0.0:8000 core.wsgi:application
+# Plusieurs fils : avec un seul, servir une vidéo ou recevoir un gros envoi
+# bloquait toute l'API le temps du transfert. Le délai de 30 s par défaut est
+# trop court pour une vidéo de 100 Mo. GUNICORN_CMD_ARGS permet de surcharger.
+python -m gunicorn --bind 0.0.0.0:8000 --worker-class gthread --workers 2 --threads 4 --timeout 120 core.wsgi:application

@@ -1,7 +1,7 @@
 from django.db import models
 from django.conf import settings
 from django.utils.translation import gettext_lazy as _
-from core.validators import validate_extension_piece_jointe, validate_upload_size
+from core.validators import validate_extension_piece_jointe, validate_piece_jointe_size, validate_upload_size
 
 class Chat(models.Model):
     class ChatType(models.TextChoices):
@@ -152,7 +152,21 @@ class Message(models.Model):
         upload_to='chat_files/',
         null=True,
         blank=True,
-        validators=[validate_upload_size, validate_extension_piece_jointe],
+        validators=[validate_piece_jointe_size, validate_extension_piece_jointe],
+    )
+    # L'aperçu d'une vidéo, fabriqué par l'expéditeur. Il permet de montrer la
+    # vidéo sans la télécharger : c'est le membre qui décide de payer ces données.
+    # Rangé sous `chat_files/` pour rester derrière un lien signé (core/media.py).
+    file_thumbnail = models.ImageField(
+        upload_to='chat_files/vignettes/',
+        null=True,
+        blank=True,
+        validators=[validate_upload_size],
+    )
+    file_duration = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Durée d'une vidéo, en secondes.",
     )
     reply_to = models.ForeignKey(
         'self',

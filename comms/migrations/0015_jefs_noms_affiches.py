@@ -26,7 +26,12 @@ def recomposer_les_cartes(apps, schema_editor):
     from comms.models import Message
     from contributions.models import Donation
 
-    for message in Message.objects.filter(message_type='card', payload__kind='jef'):
+    #
+    # `only` : le modèle réel connaît les colonnes ajoutées APRÈS cette migration,
+    # que la table n'a pas encore sur une base neuve. Sans lui, toute installation
+    # depuis zéro échoue ici dès qu'on ajoute un champ à `Message`.
+    cartes = Message.objects.filter(message_type='card', payload__kind='jef').only('id', 'payload', 'content')
+    for message in cartes:
         ancien = message.payload or {}
         if 'text_discreet' in ancien:
             continue

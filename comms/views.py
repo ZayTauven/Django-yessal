@@ -232,7 +232,12 @@ class ChatViewSet(viewsets.ModelViewSet):
 
         # Les fichiers partagés ne partent pas avec la cascade des messages :
         # ils resteraient sur le disque, sans plus aucun lien pour les servir.
-        fichiers = [m.file for m in chat.messages.exclude(file='').exclude(file__isnull=True)]
+        fichiers = [
+            fichier
+            for m in chat.messages.exclude(file='').exclude(file__isnull=True)
+            for fichier in (m.file, m.file_thumbnail)
+            if fichier
+        ]
         membres = list(chat.memberships.values_list('user_id', flat=True))
         chat_id = chat.pk
         with transaction.atomic():
@@ -767,6 +772,8 @@ class MessageViewSet(viewsets.ModelViewSet):
         # supprimer le fichier associé
         if message.file:
             message.file.delete(save=False)
+        if message.file_thumbnail:
+            message.file_thumbnail.delete(save=False)
         message.save()
         return Response({'success': True, 'id': message.id})
 
