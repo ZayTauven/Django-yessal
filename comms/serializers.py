@@ -1,5 +1,6 @@
 import base64
 import binascii
+from bisect import bisect_left
 import io
 import os
 import uuid
@@ -170,6 +171,37 @@ class ReplyPreviewSerializer(serializers.ModelSerializer):
         return apercu_message(obj)[:200]
 
 
+class LecturesDuCanal:
+    """Combien de membres ont ouvert un canal depuis la parution d'un message.
+
+    Une vue n'est pas enregistrée message par message : chaque membre a déjà une
+    date de dernière lecture (`mark_read`), que le web et le mobile tiennent à
+    jour. Aucune table qui grossit, aucun appel de plus, et les publications déjà
+    parues ont leur compteur tout de suite.
+
+    Le prix de cette simplicité : ouvrir le canal compte pour tout ce qui a paru
+    avant, même sans avoir fait défiler jusque-là. Le compteur dit « a ouvert le
+    canal depuis », pas « a lu ce message jusqu'au bout ».
+
+    Chargé une fois par réponse : un fil de 30 messages ne coûte qu'une requête.
+    """
+
+    def __init__(self, chat_id):
+        self.par_membre = dict(
+            ChatMembership.objects.filter(chat_id=chat_id, last_read_at__isnull=False)
+            .values_list('user_id', 'last_read_at')
+        )
+        self.dates = sorted(self.par_membre.values())
+
+    def vues(self, message):
+        total = len(self.dates) - bisect_left(self.dates, message.sent_at)
+        # L'auteur ne se compte pas : publier vaut lecture (`perform_create`).
+        lecture_auteur = self.par_membre.get(message.sender_id)
+        if lecture_auteur and lecture_auteur >= message.sent_at:
+            total -= 1
+        return total
+
+
 class MessageSerializer(serializers.ModelSerializer):
     sender = UserBriefSerializer(read_only=True)
     reactions = serializers.SerializerMethodField()
@@ -179,6 +211,7 @@ class MessageSerializer(serializers.ModelSerializer):
     file_is_image = serializers.SerializerMethodField()
     file_kind = serializers.SerializerMethodField()
     file_thumbnail_url = serializers.SerializerMethodField()
+    view_count = serializers.SerializerMethodField()
     thumbnail_b64 = serializers.CharField(write_only=True, required=False, allow_blank=True)
     reply_preview = ReplyPreviewSerializer(source='reply_to', read_only=True)
     # Vide autorisé : une pièce jointe peut partir sans légende. La règle
@@ -192,7 +225,7 @@ class MessageSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'chat', 'sender', 'message_type', 'content',
             'file', 'file_url', 'file_name', 'file_size', 'file_is_image', 'file_kind',
-            'file_thumbnail_url', 'file_duration', 'thumbnail_b64',
+            'file_thumbnail_url', 'file_duration', 'thumbnail_b64', 'view_count',
             'reply_to', 'reply_preview', 'reactions', 'is_deleted', 'sent_at',
             'edited_at', 'payload', 'client_id',
         ]
@@ -265,6 +298,15 @@ class MessageSerializer(serializers.ModelSerializer):
 
     def get_file_url(self, obj):
         return obj.file.url if obj.file and not obj.is_deleted else None
+
+    def get_view_count(self, obj):
+        """Les vues d'une publication de canal ; `None` partout ailleurs."""
+        if obj.is_deleted or obj.chat.chat_type != Chat.ChatType.CHANNEL:
+            return None
+        lectures = self.context.setdefault('lectures_des_canaux', {})
+        if obj.chat_id not in lectures:
+            lectures[obj.chat_id] = LecturesDuCanal(obj.chat_id)
+        return lectures[obj.chat_id].vues(obj)
 
     def get_file_thumbnail_url(self, obj):
         return obj.file_thumbnail.url if obj.file_thumbnail and not obj.is_deleted else None
