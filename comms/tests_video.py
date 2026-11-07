@@ -122,6 +122,23 @@ class EnvoiVideoTests(APITestCase):
         self.assertIsNone(r.json()['file_thumbnail_url'])
         self.assertIsNone(r.json()['file_duration'])
 
+    def test_un_livre_epub_est_accepte_comme_document(self):
+        fichier = SimpleUploadedFile('livre.epub', b'PK\x03\x04', content_type='application/epub+zip')
+        r = self.client.post(
+            '/api/comms/messages/', {'chat': self.chat.id, 'file': fichier}, format='multipart',
+        )
+
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(r.json()['file_kind'], 'document')
+
+    def test_un_format_hors_liste_reste_refuse(self):
+        fichier = SimpleUploadedFile('page.html', b'<html>', content_type='text/html')
+        r = self.client.post(
+            '/api/comms/messages/', {'chat': self.chat.id, 'file': fichier}, format='multipart',
+        )
+
+        self.assertEqual(r.status_code, 400, r.content)
+
     def test_supprimer_le_message_efface_la_video_et_son_apercu(self):
         corps = self.envoyer(thumbnail_b64=jpeg_base64()).json()
         message = Message.objects.get(pk=corps['id'])

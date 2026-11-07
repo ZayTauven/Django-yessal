@@ -137,7 +137,7 @@ EXTENSIONS_PIECE_JOINTE = [
     # Images
     "jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif",
     # Documents
-    "pdf", "doc", "docx", "odt", "rtf", "txt",
+    "pdf", "doc", "docx", "odt", "rtf", "txt", "epub",
     # Tableurs et présentations
     "xls", "xlsx", "ods", "csv", "ppt", "pptx", "odp",
     # Audio et vidéo — les messages vocaux passent par là
@@ -151,7 +151,7 @@ validate_extension_piece_jointe = FileExtensionValidator(
     allowed_extensions=EXTENSIONS_PIECE_JOINTE,
     message=(
         "Ce type de fichier n'est pas accepté en pièce jointe. "
-        "Formats autorisés : images, PDF, documents bureautiques, audio, "
+        "Formats autorisés : images, PDF, EPUB, documents bureautiques, audio, "
         "vidéo et archives ZIP."
     ),
 )
